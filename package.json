@@ -1,0 +1,55 @@
+{
+  "name": "pi-memory-hindsight",
+  "version": "0.1.0",
+  "description": "Governed long-term memory extension for Pi, backed by Hindsight",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "docs"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "acceptance:pi": "npm run build && node scripts/acceptance-pi.mjs",
+    "acceptance:hindsight:live": "npm run build && node scripts/acceptance-hindsight-live.mjs",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.85.1 <0.86.0"
+  },
+  "dependencies": {
+    "typebox": "1.3.7",
+    "@earendil-works/pi-ai": "0.85.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3",
+    "vitest": "4.1.9"
+  },
+  "keywords": [
+    "pi",
+    "extension",
+    "memory",
+    "hindsight",
+    "pi-package"
+  ]
+}
