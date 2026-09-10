@@ -600,7 +600,7 @@ Candidate 默认 30 天过期。未处理的 `pending` Candidate 到期后会原
 - Hindsight HTTP API：`0.8.3`，需**单独启动**并可达（默认 `http://127.0.0.1:8888`）；
 - 系统：macOS 或 Linux。
 
-> **说明：** 下列 GitHub 直装步骤面向公开仓库 `https://github.com/stones-hub/pi-memory-hindsight`。在你把当前工作树推送到该仓库之前，远程仓库**尚未**包含本插件代码；本地开发请用文末「开发验证」中的路径安装或 `npm test`。
+> **说明：** 下列 GitHub 直装步骤面向公开仓库 `https://github.com/stones-hub/pi-memory-hindsight`。使用版本 tag 安装可固定代码版本；直接使用仓库 URL 安装时跟随默认分支。
 
 ---
 
