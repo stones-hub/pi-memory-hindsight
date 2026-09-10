@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_HINDSIGHT_URL,
   loadGlobalConfig,
@@ -10,6 +10,10 @@ import {
   validateHindsightUrl,
 } from "../src/config/global-config.js";
 import { loadProjectConfig, validateProjectConfig } from "../src/config/project-config.js";
+import { MemoryDatabase } from "../src/db/database.js";
+import { peekCachedLocalRuntime, resetGlobalRuntimeForTests } from "../src/runtime/global-runtime.js";
+import { t } from "../src/i18n/messages.js";
+import extension from "../src/index.js";
 
 const tempDirs: string[] = [];
 
@@ -79,5 +83,34 @@ describe("project config", () => {
     );
     const result = await loadProjectConfig(dir);
     expect(result).toEqual({ ok: true, config: { enabled: true, project: "Repo" } });
+  });
+});
+
+describe("cached local runtime peek for help", () => {
+  afterEach(() => {
+    resetGlobalRuntimeForTests();
+    vi.restoreAllMocks();
+  });
+
+  it("help does not open SQLite or create a Profile when no runtime is cached", async () => {
+    resetGlobalRuntimeForTests();
+    const open = vi.spyOn(MemoryDatabase, "open");
+    const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+    extension({
+      on: vi.fn(),
+      appendEntry: vi.fn(),
+      registerCommand: (name: string, def: { handler: (args: string, ctx: unknown) => Promise<void> }) =>
+        commands.set(name, def),
+      registerTool: vi.fn(),
+    } as any);
+    const notify = vi.fn();
+    await commands.get("memory")!.handler("help", {
+      mode: "tui",
+      ui: { notify },
+      sessionManager: { getSessionId: () => "help-peek-session" },
+    });
+    expect(open).not.toHaveBeenCalled();
+    expect(peekCachedLocalRuntime()).toBeUndefined();
+    expect(notify).toHaveBeenCalledWith(t("en", "memory.help"), "info");
   });
 });

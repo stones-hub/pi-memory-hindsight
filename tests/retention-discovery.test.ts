@@ -75,6 +75,7 @@ const { getGlobalRuntimeMock, getLocalRuntimeMock, resolveProjectBankMock } = vi
 vi.mock("../src/runtime/global-runtime.js", () => ({
   getGlobalRuntime: getGlobalRuntimeMock,
   getLocalRuntime: getLocalRuntimeMock,
+  peekCachedLocalRuntime: () => undefined,
 }));
 
 vi.mock("../src/runtime/project-runtime.js", () => ({

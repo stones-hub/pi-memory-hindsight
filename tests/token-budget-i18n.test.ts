@@ -40,4 +40,67 @@ describe("i18n", () => {
     expect(t("zh", "memory.on")).toContain("已开启");
     expect(t("zh", "nonexistent.key")).toBe("nonexistent.key");
   });
+
+  it("covers every supported /memory command form in grouped bilingual help", () => {
+    const requiredForms = [
+      "/memory help",
+      "/memory status",
+      "/memory on",
+      "/memory off",
+      "/memory remember <scope> <type> <content>",
+      "/memory update <memory-id> <content>",
+      "/memory forget <memory-id>",
+      "/memory list",
+      "/memory list profile",
+      "/memory list project",
+      "/memory show <memory-id>",
+      "/memory last",
+      "/memory candidates",
+      "/memory candidates list",
+      "/memory candidates approve <candidate-id>",
+      "/memory candidates reject <candidate-id>",
+      "/memory candidates edit-approve <candidate-id> <content>",
+      "/memory cleanup status",
+      "/memory cleanup now",
+      "/memory language zh",
+      "/memory language en",
+      "/memory reflect profile <query>",
+      "/memory reflect project <query>",
+    ];
+    const groups = {
+      en: [
+        "Help and status",
+        "Session controls",
+        "Formal memory creation, update, and deletion",
+        "Memory discovery",
+        "Candidate review",
+        "Cleanup",
+        "Language",
+        "Reflection",
+      ],
+      zh: ["帮助与状态", "会话控制", "正式记忆的创建、更新与删除", "记忆发现", "候选审阅", "清理", "语言", "回顾"],
+    } as const;
+
+    for (const language of ["en", "zh"] as const) {
+      const help = t(language, "memory.help");
+      for (const group of groups[language]) {
+        expect(help).toContain(group);
+      }
+      for (const form of requiredForms) {
+        expect(help).toContain(form);
+      }
+      expect(help).toContain("preference|habit");
+      expect(help).toContain("project_fact|decision|lesson|task_state|inference");
+      expect(help.split("\n").some((line) => /^\s*\/memory extract(?:\s|$)/.test(line))).toBe(false);
+    }
+
+    const english = t("en", "memory.help");
+    expect(english).toContain("interactive TUI only");
+    expect(english).toContain("Requires confirmation");
+    expect(english).toContain("There is no /memory extract command");
+    const chinese = t("zh", "memory.help");
+    expect(chinese).toContain("仅交互式 TUI");
+    expect(chinese).toContain("需要确认");
+    expect(chinese).toContain("没有 /memory extract 命令");
+  });
 });

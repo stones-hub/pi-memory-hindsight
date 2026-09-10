@@ -22,15 +22,17 @@ import { getSessionState, noteTurnStart, resetAllSessionStateForTests, setSessio
 import { buildOwnedDocumentId } from "../src/provider/validation.js";
 import { handleAgentEnd, handleAgentSettled } from "../src/extraction/extraction-service.js";
 
-const { getGlobalRuntimeMock, getLocalRuntimeMock, resolveProjectBankMock } = vi.hoisted(() => ({
+const { getGlobalRuntimeMock, getLocalRuntimeMock, peekCachedLocalRuntimeMock, resolveProjectBankMock } = vi.hoisted(() => ({
   getGlobalRuntimeMock: vi.fn(),
   getLocalRuntimeMock: vi.fn(),
+  peekCachedLocalRuntimeMock: vi.fn(),
   resolveProjectBankMock: vi.fn(),
 }));
 
 vi.mock("../src/runtime/global-runtime.js", () => ({
   getGlobalRuntime: getGlobalRuntimeMock,
   getLocalRuntime: getLocalRuntimeMock,
+  peekCachedLocalRuntime: peekCachedLocalRuntimeMock,
 }));
 
 vi.mock("../src/runtime/project-runtime.js", () => ({
@@ -96,6 +98,10 @@ function makeContext(overrides: Partial<any> = {}) {
   };
 }
 
+function helpListsExecutableExtract(help: string): boolean {
+  return help.split("\n").some((line) => /^\s*\/memory extract(?:\s|$)/.test(line));
+}
+
 function captureExtension() {
   const commands = new Map<string, any>();
   const tools = new Map<string, any>();
@@ -114,6 +120,7 @@ describe("slice 4 governance commands and tools", () => {
     resetAllSessionStateForTests();
     getGlobalRuntimeMock.mockReset();
     getLocalRuntimeMock.mockReset();
+    peekCachedLocalRuntimeMock.mockReset();
     resolveProjectBankMock.mockReset();
   });
 
@@ -157,13 +164,17 @@ describe("slice 4 governance commands and tools", () => {
     expect(parseMemoryCommand("update only-id")).toBeNull();
     expect(parseMemoryCommand("extract")).toBeNull();
     expect(parseMemoryCommand("extract extra")).toBeNull();
-    expect(t("en", "memory.help")).not.toContain("extract");
-    expect(t("zh", "memory.help")).not.toContain("extract");
+    expect(parseMemoryCommand("")).toEqual({ kind: "help" });
+    expect(parseMemoryCommand("help")).toEqual({ kind: "help" });
+    expect(parseMemoryCommand("help extra")).toBeNull();
+    expect(helpListsExecutableExtract(t("en", "memory.help"))).toBe(false);
+    expect(helpListsExecutableExtract(t("zh", "memory.help"))).toBe(false);
   });
 
   it("treats bare extract as an unknown command and shows help", async () => {
     const runtime = makeRuntime();
-    getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    runtime.profile.language = "en";
+    peekCachedLocalRuntimeMock.mockReturnValue({ ok: true, runtime });
     const { commands } = captureExtension();
     const command = commands.get("memory");
     const ctx = makeContext();
@@ -176,6 +187,107 @@ describe("slice 4 governance commands and tools", () => {
     expect(notify.mock.calls[0]?.[1]).toBe("error");
     expect(notify.mock.calls[1]?.[0]).toBe(t("en", "memory.help"));
     expect(notify.mock.calls[1]?.[1]).toBe("error");
+    expect(getLocalRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  it("parses exact help, renders the same detailed help for /memory help and bare /memory, and stays read-only", async () => {
+    const runtime = makeRuntime();
+    runtime.profile.language = "zh";
+    const candidate = runtime.repos.candidates.create({
+      scope: "profile",
+      memoryType: "preference",
+      text: "Keep help read-only.",
+      evidenceSummary: "explicit",
+      sourceSessionId: "s1",
+      sourceRef: "turn:1",
+      proposedAction: "create",
+      targetMemoryId: null,
+      projectIdentity: null,
+    });
+    const auditBefore = runtime.repos.audit.listRecent(20).length;
+    peekCachedLocalRuntimeMock.mockReturnValue({ ok: true, runtime });
+    const { commands } = captureExtension();
+    const command = commands.get("memory");
+    const ctx = makeContext();
+    const notify = vi.fn();
+    ctx.ui.notify = notify;
+
+    await command!.handler("help", ctx);
+    await command!.handler("", ctx);
+    await command!.handler("help extra", ctx);
+    await command!.handler("not-a-command", ctx);
+
+    const zhHelp = t("zh", "memory.help");
+    expect(notify).toHaveBeenCalledTimes(4);
+    expect(notify.mock.calls[0]?.[0]).toBe(zhHelp);
+    expect(notify.mock.calls[0]?.[1]).toBe("info");
+    expect(notify.mock.calls[1]?.[0]).toBe(zhHelp);
+    expect(notify.mock.calls[1]?.[1]).toBe("info");
+    expect(notify.mock.calls[2]?.[0]).toBe(zhHelp);
+    expect(notify.mock.calls[2]?.[1]).toBe("error");
+    expect(notify.mock.calls[3]?.[0]).toBe(zhHelp);
+    expect(notify.mock.calls[3]?.[1]).toBe("error");
+    expect(getLocalRuntimeMock).not.toHaveBeenCalled();
+    expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+    expect(runtime.adapter.retainOneMemory).not.toHaveBeenCalled();
+    expect(runtime.adapter.deleteMemoryDocument).not.toHaveBeenCalled();
+    expect(runtime.adapter.reflect).not.toHaveBeenCalled();
+    expect(runtime.repos.candidates.getById(candidate.id)?.state).toBe("pending");
+    expect(runtime.repos.audit.listRecent(20)).toHaveLength(auditBefore);
+  });
+
+  it("help does not initialize local runtime and falls back to English without a successful cache", async () => {
+    peekCachedLocalRuntimeMock.mockReturnValue(undefined);
+    const { commands } = captureExtension();
+    const command = commands.get("memory");
+    const ctx = makeContext();
+    const notify = vi.fn();
+    ctx.ui.notify = notify;
+
+    await command!.handler("help", ctx);
+    await command!.handler("", ctx);
+
+    expect(notify.mock.calls).toEqual([
+      [t("en", "memory.help"), "info"],
+      [t("en", "memory.help"), "info"],
+    ]);
+    expect(getLocalRuntimeMock).not.toHaveBeenCalled();
+    expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+    expect(peekCachedLocalRuntimeMock).toHaveBeenCalled();
+  });
+
+  it("renders English help when local runtime is unavailable and still skips provider I/O", async () => {
+    peekCachedLocalRuntimeMock.mockReturnValue({ ok: false, reason: "sqlite unavailable" });
+    const { commands } = captureExtension();
+    const command = commands.get("memory");
+    const ctx = makeContext();
+    const notify = vi.fn();
+    ctx.ui.notify = notify;
+
+    await command!.handler("help", ctx);
+    await command!.handler("", ctx);
+    await command!.handler("extract", ctx);
+
+    expect(notify.mock.calls).toEqual([
+      [t("en", "memory.help"), "info"],
+      [t("en", "memory.help"), "info"],
+      [t("en", "memory.help"), "error"],
+    ]);
+    expect(getLocalRuntimeMock).not.toHaveBeenCalled();
+    expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not render help outside TUI mode", async () => {
+    const { commands } = captureExtension();
+    const command = commands.get("memory");
+    for (const mode of ["rpc", "json", "print"]) {
+      const ctx = makeContext({ mode });
+      await command!.handler("help", ctx);
+      await command!.handler("", ctx);
+      expect(ctx.ui.notify).not.toHaveBeenCalled();
+    }
+    expect(getLocalRuntimeMock).not.toHaveBeenCalled();
+    expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
   });
 
   it("routes /memory update and tool update through the shared replace path", async () => {

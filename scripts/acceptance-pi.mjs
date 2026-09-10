@@ -105,6 +105,8 @@ function ensureRequiredSuccess(evidence) {
     "memoryListShowWorked",
     "cleanupStatusWorked",
     "cleanupNowWorked",
+    "memoryHelpWorked",
+    "memoryHelpDidNotCreateSqlite",
     "providerOfflineDegraded",
     "printModeAutoNoop",
     "jsonModeAutoNoop",
@@ -202,6 +204,38 @@ async function waitForCandidateCount(agentDir, expectedCount, timeoutMs) {
 
 function countRoutes(journal, route) {
   return journal.filter((entry) => entry.route === route).length;
+}
+
+const HELP_GROUPS_EN = [
+  "Help and status",
+  "Session controls",
+  "Formal memory creation, update, and deletion",
+  "Memory discovery",
+  "Candidate review",
+  "Cleanup",
+  "Language",
+  "Reflection",
+];
+
+function mutationRouteCounts(journal) {
+  return {
+    retain: countRoutes(journal, "retain"),
+    document_delete: countRoutes(journal, "document_delete"),
+    recall: countRoutes(journal, "recall"),
+    document_get: countRoutes(journal, "document_get"),
+    list: countRoutes(journal, "list"),
+  };
+}
+
+async function memorySqlitePresent(agentDir) {
+  const dir = path.join(agentDir, "memory");
+  try {
+    const names = await fs.readdir(dir);
+    return names.some((name) => name === "pi-memory-hindsight.db" || name.startsWith("pi-memory-hindsight.db"));
+  } catch (error) {
+    if (error && error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function parseSessionJsonl(text) {
@@ -332,6 +366,8 @@ const evidence = {
   memoryListShowWorked: false,
   cleanupStatusWorked: false,
   cleanupNowWorked: false,
+  memoryHelpWorked: false,
+  memoryHelpDidNotCreateSqlite: false,
   providerOfflineDegraded: false,
   printModeAutoNoop: false,
   jsonModeAutoNoop: false,
@@ -343,6 +379,7 @@ const evidence = {
 };
 
 let server;
+let helpOnlyPaths;
 const failure = {};
 try {
   const packDir = path.join(paths.rootDir, "pack");
@@ -397,6 +434,49 @@ try {
   );
   evidence.toolRegistered = rpcToolOutput.includes("memory_remember");
 
+  helpOnlyPaths = await createIsolatedPaths("pi-memory-hindsight-acceptance-help-");
+  await writeGlobalMemoryConfig(helpOnlyPaths.agentDir, server.baseUrl);
+  const helpOnlyEnv = buildIsolatedPiEnv(helpOnlyPaths, {
+    HINDSIGHT_API_KEY: "acceptance-secret-token",
+  });
+  const helpOnlyArgs = [
+    "--offline",
+    "--approve",
+    "--session-dir",
+    helpOnlyPaths.sessionDir,
+    "--no-extensions",
+    "-e",
+    unpacked,
+    "-e",
+    FAKE_PROVIDER,
+    "-e",
+    PROBE,
+    "--provider",
+    "acceptance-local",
+    "--model",
+    "acceptance-local-model",
+  ];
+  assert(
+    (await memorySqlitePresent(helpOnlyPaths.agentDir)) === false,
+    "fresh help-only agent dir already had a memory SQLite file",
+  );
+  const helpOnlySession = await runPtySession(
+    ["pi", ...helpOnlyArgs, "--name", "acceptance-help-fresh"],
+    helpOnlyEnv,
+    helpOnlyPaths.projectDir,
+    [
+      { input: "\r", expect: "Press ctrl+o", timeoutMs: 7000 },
+      { input: "/memory help\r", expect: "Help and status", timeoutMs: 8000 },
+      { input: "/quit\r", timeoutMs: 6000 },
+    ],
+    16000,
+  );
+  failure.helpOnlySession = redactText(helpOnlySession.output, helpOnlyPaths);
+  evidence.memoryHelpDidNotCreateSqlite =
+    helpOnlySession.output.includes("Help and status") &&
+    (await memorySqlitePresent(helpOnlyPaths.agentDir)) === false;
+  assert(evidence.memoryHelpDidNotCreateSqlite, "fresh /memory help created SQLite or a Profile");
+
   const firstSession = await runPtySession(
     ["pi", ...baseArgs],
     env,
@@ -427,7 +507,44 @@ try {
   const rememberedRow = afterRemember.db
     .prepare("SELECT id, document_id, text_hash FROM memories WHERE status = 'active' ORDER BY created_at DESC LIMIT 1")
     .get();
+  const helpCountsBefore = { ...afterRemember.counts };
   afterRemember.db.close();
+  const beforeHelpRoutes = mutationRouteCounts(server.journal);
+  const helpSession = await runPtySession(
+    ["pi", ...baseArgs, "--name", "acceptance-help"],
+    env,
+    paths.projectDir,
+    [
+      { input: "\r", expect: "Press ctrl+o", timeoutMs: 7000 },
+      { input: "/memory language en\r", expect: "Language set to en.", timeoutMs: 6000 },
+      { input: "/memory help\r", expect: "Help and status", timeoutMs: 8000 },
+      { input: "/memory\r", expect: "Candidate review", timeoutMs: 8000 },
+      { input: "/memory help extra\r", expect: "There is no /memory extract command", timeoutMs: 8000 },
+      { input: "/memory language zh\r", expect: "语言已设置为 zh。", timeoutMs: 6000 },
+      { input: "/memory help\r", expect: "帮助与状态", timeoutMs: 8000 },
+      { input: "/memory language en\r", expect: "Language set to en.", timeoutMs: 6000 },
+      { input: "/quit\r", timeoutMs: 6000 },
+    ],
+    45000,
+  );
+  failure.helpSession = redactText(helpSession.output, paths);
+  const afterHelpRoutes = mutationRouteCounts(server.journal);
+  const helpDbAfter = readDb(paths.agentDir);
+  const helpCountsAfter = { ...helpDbAfter.counts };
+  helpDbAfter.db.close();
+  evidence.memoryHelpWorked =
+    HELP_GROUPS_EN.every((group) => helpSession.output.includes(group)) &&
+    helpSession.output.includes("There is no /memory extract command") &&
+    helpSession.output.includes("帮助与状态") &&
+    helpSession.output.includes("preference|habit") &&
+    helpSession.output.includes("project_fact|decision|lesson|task_state|inference") &&
+    helpSession.output.includes("/memory remember <scope> <type> <content>") &&
+    helpSession.output.includes("/memory reflect profile <query>") &&
+    helpSession.output.includes("/memory reflect project <query>") &&
+    JSON.stringify(beforeHelpRoutes) === JSON.stringify(afterHelpRoutes) &&
+    helpCountsAfter.candidates === helpCountsBefore.candidates &&
+    helpCountsAfter.memories === helpCountsBefore.memories;
+  assert(evidence.memoryHelpWorked, "packaged /memory help did not prove detailed read-only help");
   const updatedPreviewMarker = "short summaries";
   const surfacedIdMatch = firstSession.output.match(/id=([0-9a-f-]{36})/i);
   const surfacedId = surfacedIdMatch?.[1] ?? null;
@@ -625,12 +742,16 @@ try {
     [
       { input: "\r", expect: "Press ctrl+o", timeoutMs: 7000 },
       { input: "/memory status\r", expect: "unavailable", timeoutMs: 6000 },
+      { input: "/memory help\r", expect: "Help and status", timeoutMs: 8000 },
       { input: "/quit\r", timeoutMs: 6000 },
     ],
-    12000,
+    16000,
   );
   failure.degraded = redactText(degraded.output, paths);
   evidence.providerOfflineDegraded = degraded.output.toLowerCase().includes("unavailable");
+  evidence.memoryHelpWorked =
+    evidence.memoryHelpWorked === true && degraded.output.includes("Help and status");
+  assert(evidence.memoryHelpWorked, "help must still render when Hindsight is unavailable");
   server.setMode({});
 
   const beforePrint = { recall: countRoutes(server.journal, "recall"), retain: countRoutes(server.journal, "retain") };
@@ -721,5 +842,6 @@ try {
     await server?.close();
   } finally {
     await cleanupIsolatedPaths(paths);
+    if (helpOnlyPaths) await cleanupIsolatedPaths(helpOnlyPaths);
   }
 }

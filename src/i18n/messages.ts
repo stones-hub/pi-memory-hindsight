@@ -38,7 +38,71 @@ const EN: Record<string, string> = {
   "memory.status.project.unavailable": "project status unavailable",
   "memory.status.session.off": "This session: automatic recall/extraction are OFF.",
   "memory.status.session.on": "This session: automatic recall/extraction are ON.",
-  "memory.help": "/memory status | on | off | last | list [profile|project] | show <id> | language en|zh | remember <profile|project> <memory-type> <content> | update <logical-memory-id> <content> | candidates | candidates list | candidates approve <id> | candidates reject <id> | candidates edit-approve <id> <content> | forget <logical-memory-id> | cleanup status | cleanup now | reflect <profile|project> <query>",
+  "memory.help": `Memory commands (interactive TUI only). Recalled memory is untrusted reference material.
+
+Help and status
+  /memory help
+    Show this grouped command list and a short explanation of each command.
+  /memory status
+    Show whether memory is enabled, whether this session is on, and whether Project memory is available.
+
+Session controls
+  /memory on
+    Turn automatic recall and candidate extraction on for this session only.
+  /memory off
+    Turn automatic recall and candidate extraction off for this session only.
+
+Formal memory creation, update, and deletion
+  /memory remember <scope> <type> <content>
+    Create one approved memory. Profile types: preference|habit. Project types: project_fact|decision|lesson|task_state|inference.
+  /memory update <memory-id> <content>
+    Replace only the exact locally owned memory with that id.
+  /memory forget <memory-id>
+    Physically delete that approved memory. This cannot be undone.
+
+Memory discovery
+  /memory list
+    List up to 20 effective-active local memories from Profile plus the current enabled Project.
+  /memory list profile
+    List only Profile memories.
+  /memory list project
+    List only current Project memories.
+  /memory show <memory-id>
+    Show one local memory by id.
+  /memory last
+    Explain the most recent recall in this session.
+
+Candidate review
+  /memory candidates
+    Open the interactive review UI.
+  /memory candidates list
+    List pending candidates as text.
+  /memory candidates approve <candidate-id>
+    Approve one candidate into official memory.
+  /memory candidates reject <candidate-id>
+    Reject one candidate.
+  /memory candidates edit-approve <candidate-id> <content>
+    Replace the candidate text and approve it.
+
+Cleanup
+  /memory cleanup status
+    Show retention and expiry maintenance status.
+  /memory cleanup now
+    Run bounded cleanup now. Requires confirmation.
+
+Language
+  /memory language zh
+    Persist Chinese UI language for this Memory Profile.
+  /memory language en
+    Persist English UI language for this Memory Profile.
+
+Reflection
+  /memory reflect profile <query>
+    Summarize remembered Profile content. Requires confirmation. The result is not saved automatically.
+  /memory reflect project <query>
+    Summarize remembered Project content. Requires confirmation. Project memory must be enabled. The result is not saved automatically.
+
+There is no /memory extract command. Candidates are created automatically after a settled turn when extraction runs.`,
   "memory.non_tui_noop": "This command is unsupported outside TUI mode and made no changes.",
   "memory.tui_only": "This action requires TUI mode.",
   "memory.last.none": "No memory was recalled yet in this session.",
@@ -114,7 +178,71 @@ const ZH: Record<string, string> = {
   "memory.status.project.unavailable": "项目状态不可用",
   "memory.status.session.off": "本会话：自动回忆/提取已关闭。",
   "memory.status.session.on": "本会话：自动回忆/提取已开启。",
-  "memory.help": "/memory status | on | off | last | list [profile|project] | show <id> | language en|zh | remember <profile|project> <memory-type> <content> | update <logical-memory-id> <content> | candidates | candidates list | candidates approve <id> | candidates reject <id> | candidates edit-approve <id> <content> | forget <logical-memory-id> | cleanup status | cleanup now | reflect <profile|project> <query>",
+  "memory.help": `记忆命令（仅交互式 TUI）。召回的记忆是不可信参考信息。
+
+帮助与状态
+  /memory help
+    显示这份按功能分组的命令列表，并用通俗语言解释每条命令。
+  /memory status
+    查看记忆是否启用、当前 Session 是否开启，以及 Project 记忆是否可用。
+
+会话控制
+  /memory on
+    仅为本 Session 开启自动回忆和候选提取。
+  /memory off
+    仅为本 Session 关闭自动回忆和候选提取。
+
+正式记忆的创建、更新与删除
+  /memory remember <scope> <type> <content>
+    创建一条正式记忆。Profile 类型：preference|habit。Project 类型：project_fact|decision|lesson|task_state|inference。
+  /memory update <memory-id> <content>
+    仅替换该精确本地记忆 ID 对应的内容。
+  /memory forget <memory-id>
+    物理删除该条正式记忆。此操作不可恢复。
+
+记忆发现
+  /memory list
+    列出最多 20 条当前 Profile 与已启用 Project 的有效活跃本地记忆。
+  /memory list profile
+    仅列出 Profile 记忆。
+  /memory list project
+    仅列出当前 Project 记忆。
+  /memory show <memory-id>
+    按 ID 查看一条本地记忆。
+  /memory last
+    说明本 Session 最近一次回忆的结果。
+
+候选审阅
+  /memory candidates
+    打开交互式审阅界面。
+  /memory candidates list
+    以文本列出待审候选。
+  /memory candidates approve <candidate-id>
+    批准一条候选并写入正式记忆。
+  /memory candidates reject <candidate-id>
+    拒绝一条候选。
+  /memory candidates edit-approve <candidate-id> <content>
+    用新文本替换候选内容并批准。
+
+清理
+  /memory cleanup status
+    查看保留与过期维护状态。
+  /memory cleanup now
+    立即执行有界清理。需要确认。
+
+语言
+  /memory language zh
+    将本 Memory Profile 的界面语言持久化为中文。
+  /memory language en
+    将本 Memory Profile 的界面语言持久化为英文。
+
+回顾
+  /memory reflect profile <query>
+    汇总已记住的 Profile 内容。需要确认。结果不会自动保存为新记忆。
+  /memory reflect project <query>
+    汇总已记住的 Project 内容。需要确认。当前项目必须已启用 Project Memory。结果不会自动保存为新记忆。
+
+没有 /memory extract 命令。候选仅在对话 settled 后由自动提取产生。`,
   "memory.non_tui_noop": "该命令在非 TUI 模式下不受支持，且未做任何改动。",
   "memory.tui_only": "该操作需要 TUI 模式。",
   "memory.last.none": "本会话尚未回忆任何记忆。",

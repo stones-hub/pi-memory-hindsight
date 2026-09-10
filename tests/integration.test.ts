@@ -30,6 +30,7 @@ const { getGlobalRuntimeMock, resolveProjectBankMock } = vi.hoisted(() => ({
 
 vi.mock("../src/runtime/global-runtime.js", () => ({
   getGlobalRuntime: getGlobalRuntimeMock,
+  peekCachedLocalRuntime: () => undefined,
 }));
 
 vi.mock("../src/runtime/project-runtime.js", () => ({

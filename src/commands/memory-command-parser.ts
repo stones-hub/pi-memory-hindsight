@@ -60,6 +60,8 @@ export function parseMemoryCommand(input: string): ParsedMemoryCommand | null {
   const third = consumeToken(input, second.next);
 
   switch (first.token) {
+    case "help":
+      return second.token === null ? { kind: "help" } : null;
     case "status":
       return second.token === null ? { kind: "status" } : null;
     case "on":

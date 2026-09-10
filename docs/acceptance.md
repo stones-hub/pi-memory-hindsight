@@ -1,14 +1,14 @@
 # Acceptance Plan
 
-Status: Slice 5 plus retention/discovery follow-up was **accepted** by Pi (2026-09-09) on baseline `4fce7f1ef466cece83de34579b51df6f34c2e1c1`, but a subsequent **real-profile smoke** exposed that Hindsight 0.8.3 returns governance metadata on `document_metadata` (document GET) while list units use `metadata: null`. Prior PASS hashes below are **invalidated** by the `document_metadata` discovery fix (Cursor chat `93f0fce7-e569-4b4c-ac14-934a2ef1a61e`). A temporary smoke memory was physically forgotten and proven absent; existing user memory was untouched. **Pi must rerun** offline tests, packaged `acceptance:pi`, and live-profile smoke before any new acceptance claim. **Commit authorization has not been granted.** **Pi settings/config were not modified** in this fix; the user's Pi package registration may still load candidate `dist/` from this repository.
+Status: Slice 5 plus retention/discovery follow-up was **accepted** by Pi (2026-09-09) on baseline `4fce7f1ef466cece83de34579b51df6f34c2e1c1`. The later uncommitted `/memory help` command task is also **accepted locally by Pi**: it adds a public TUI help entrypoint plus required booleans `memoryHelpWorked` and `memoryHelpDidNotCreateSqlite`. Prior packaged PASS hashes are superseded for this candidate. **Commit authorization has not been granted.**
 
 ## Evidence layers (do not conflate)
 
 | Layer | Who runs it | What it proves | Final evidence (2026-09-09) |
 |---|---|---|---|
 | Agent/executor self-report | Coding agent during implementation | Implementation intent only; not acceptance by itself. | Chat `93f0fce7-e569-4b4c-ac14-934a2ef1a61e` |
-| Pi independent offline checks | Pi reviewer | `npm test`, typecheck, build, pack dry-run, audit, diff/NUL on uncommitted tree. | **15 files / 269 tests**; audit **0** vulns; NUL clean; pack dry-run **224 files**, SHA-256 `e218c607…1d40b` |
-| Packaged Pi offline acceptance | Pi reviewer (`npm run acceptance:pi`) | Packed tarball in isolated temp dirs with mock Hindsight; **19** required booleans `true`. | `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `e92a9960…f539a9` |
+| Pi independent offline checks | Pi reviewer | `npm test`, typecheck, build, pack dry-run, audit, diff/NUL on uncommitted tree. | `0.2.0` candidate: **16 files / 278 tests**; typecheck/build pass; audit **0** vulns; NUL/diff clean; pack dry-run **65 files**, LICENSE/source entry present, no `dist/` |
+| Packaged Pi offline acceptance | Pi reviewer (`npm run acceptance:pi`) | Packed tarball in isolated temp dirs with mock Hindsight; **21** required booleans `true` after `/memory help`. | `0.2.0` candidate: `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `2c3e9eab6d04bec7ffa10041b1564994c810505abcfecf54353798a27f4d1d23`; `pending=[]` |
 | Disposable live Hindsight contract | Pi reviewer (`npm run acceptance:hindsight:live`) | One nonce-derived bank only; never list Banks. | `/tmp/pi-memory-hindsight-acceptance-hindsight-live.json`, SHA-256 `c9408a9f…d78ca` |
 | Final read-only review | Pi reviewer | Architecture/policy/safety verdict. | **PASS**; chat `c06e5d55-4faa-4dd6-b211-99e75977423a`; SHA-256 `18b7b47f…9c1ff` |
 | Live Pi TUI against user profile | User | Not run in this follow-up. | Settings/config unchanged; local package registration may load candidate `dist/` |
@@ -25,7 +25,13 @@ Status: Slice 5 plus retention/discovery follow-up was **accepted** by Pi (2026-
 
 ## Current packaged offline evidence
 
-**Final (2026-09-09):** `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `e92a9960de7aa13747833be6aaf8c7bbee2ae7cbc239201e9372f10fb8f539a9`. All **19** required booleans `true`; `pending=[]`; isolated resources cleaned.
+**Historical (2026-09-09, 19 booleans, pre-help):** `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `e92a9960de7aa13747833be6aaf8c7bbee2ae7cbc239201e9372f10fb8f539a9`. Do not treat as current after `/memory help`. The runner now hard-fails unless **21** required booleans are `true` and `pending=[]`.
+
+**Prior coding-agent packaged run (stale after help peek/reflect fix):** SHA-256 `da5c3cd761b06f51d276c27068375d207560d5b9e111f6131d296f3fd9fe7102`.
+
+**Coding-agent packaged run (help peek/reflect fix, superseded by Pi rerun):** SHA-256 `a1d3fca6ce51c1526ec5f471c60829f02f21b89fb6d7011deab35229272fa1d2`.
+
+**Pi independent packaged run (current `0.2.0` candidate):** `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `2c3e9eab6d04bec7ffa10041b1564994c810505abcfecf54353798a27f4d1d23`. All **21** required booleans are `true`; `pending=[]`; isolated resources cleaned. The prior Pi pre-version-bump hash `ebf9279a…16c1` is superseded.
 
 The isolated runner proves:
 
@@ -41,8 +47,10 @@ The isolated runner proves:
 10. Provider-unavailable status degrades without crashing the Pi session.
 11. Print, JSON, and RPC modes perform no automatic recall/retain and leave SQLite candidate/memory counts unchanged.
 12. The request journal proves auth was actually sent (`authPresent`) while never containing the real API key value or any remembered content.
+13. `/memory help` and bare `/memory` render the same grouped English help from the packed public command entrypoint; `/memory help extra` still shows that help; a Chinese help pass is included; Hindsight-unavailable `/memory help` still renders; the help session adds no retain/delete/recall/document_get/list routes and does not change SQLite candidate or memory counts. Help explicitly lists `/memory reflect profile <query>` and `/memory reflect project <query>` and is not an executable `/memory extract` command.
+14. A fresh isolated `PI_CODING_AGENT_DIR` that only runs `/memory help` does not create `memory/pi-memory-hindsight.db` or a Profile (`memoryHelpDidNotCreateSqlite`).
 
-Required evidence booleans include: `memoryIdSurfaced`, `memoryListShowWorked`, `cleanupStatusWorked`, and `cleanupNowWorked`, in addition to the Slice 5 booleans.
+Required evidence booleans include: `memoryIdSurfaced`, `memoryListShowWorked`, `cleanupStatusWorked`, `cleanupNowWorked`, `memoryHelpWorked`, and `memoryHelpDidNotCreateSqlite`, in addition to the Slice 5 booleans.
 
 There is no remaining packaged-acceptance gap; `npm run acceptance:pi` hard-fails (`ensureRequiredSuccess`) if any of the above cannot be proven.
 

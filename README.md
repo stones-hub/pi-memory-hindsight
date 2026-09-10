@@ -22,6 +22,27 @@
 
 所有 `/memory` 命令都应在交互式 Pi TUI 中使用。
 
+## 查看全部命令：`/memory help`
+
+```text
+/memory help
+```
+
+或直接输入：
+
+```text
+/memory
+```
+
+用途：
+
+- 按功能分组列出全部受支持的 `/memory` 命令，并用通俗语言解释每条命令；
+- 跟随已保存的 Memory 界面语言（`zh` 或 `en`），但只读取本进程已经成功缓存的本地 runtime；尚未初始化时回退英文，且不会因此创建 SQLite 或 Profile；
+- 未知命令或错误参数会以错误提示显示同一份详细帮助；
+- Hindsight 不可用时仍可查看，且不会读写 Hindsight，也不会改写 SQLite 记忆数据。
+
+帮助会说明 Profile 类型 `preference|habit`、Project 类型 `project_fact|decision|lesson|task_state|inference`，以及 `cleanup now` 与 `reflect` 需要确认。Reflect 支持 `/memory reflect profile <query>` 和 `/memory reflect project <query>`。没有手动 `/memory extract` 命令；候选仅由 settled 后的自动提取产生。
+
 ## 1. 查看状态
 
 ```text
@@ -644,7 +665,7 @@ pi update --extensions
 pi update --all
 ```
 
-需要固定到首个正式版本时，可使用：`pi install https://github.com/stones-hub/pi-memory-hindsight.git@v0.1.0`。直接使用不带 `@ref` 的仓库 URL，则跟随默认分支。
+需要固定到当前正式版本时，可使用：`pi install https://github.com/stones-hub/pi-memory-hindsight.git@v0.2.0`。需要固定到首个正式版本时，可使用 `@v0.1.0`。直接使用不带 `@ref` 的仓库 URL，则跟随默认分支。
 
 ### 卸载
 

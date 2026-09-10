@@ -47,15 +47,29 @@ export type LocalRuntimeResult = GlobalRuntimeResult;
 const COMPAT_CHECK_TIMEOUT_MS = 5000;
 
 let localCached: Promise<LocalRuntimeResult> | undefined;
+let localCachedSnapshot: LocalRuntimeResult | undefined;
 let providerCheckInFlight: Promise<GlobalRuntimeResult> | undefined;
+
+/**
+ * Returns the already-resolved local runtime, if any.
+ * Does not open SQLite, create a Profile, or start initialization.
+ */
+export function peekCachedLocalRuntime(): LocalRuntimeResult | undefined {
+  return localCachedSnapshot;
+}
 
 /** Returns the memoized local runtime without provider readiness checks. */
 export function getLocalRuntime(): Promise<LocalRuntimeResult> {
   if (!localCached) {
-    localCached = initLocalRuntime().catch((err) => ({
-      ok: false,
-      reason: `unexpected global runtime initialization error: ${String(err)}`,
-    }));
+    localCached = initLocalRuntime()
+      .catch((err) => ({
+        ok: false as const,
+        reason: `unexpected global runtime initialization error: ${String(err)}`,
+      }))
+      .then((result) => {
+        localCachedSnapshot = result;
+        return result;
+      });
   }
   return localCached;
 }
@@ -73,6 +87,7 @@ export function getGlobalRuntime(): Promise<GlobalRuntimeResult> {
 /** Test-only: clears the memoized runtime so a fresh init can be observed. */
 export function resetGlobalRuntimeForTests(): void {
   localCached = undefined;
+  localCachedSnapshot = undefined;
   providerCheckInFlight = undefined;
 }
 

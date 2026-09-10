@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getGlobalRuntime, getLocalRuntime } from "../runtime/global-runtime.js";
+import { getGlobalRuntime, getLocalRuntime, peekCachedLocalRuntime } from "../runtime/global-runtime.js";
 import { appendSessionMemoryState } from "../runtime/session-persistence.js";
 import { getSessionState, setSessionMemoryOff } from "../runtime/session-runtime.js";
 import { normalizeLanguage, t, type Language } from "../i18n/messages.js";
@@ -99,6 +99,16 @@ function helpText(language: Language): string {
   return t(language, "memory.help");
 }
 
+function resolveHelpLanguage(): Language {
+  try {
+    const cached = peekCachedLocalRuntime();
+    if (cached?.ok) {
+      return normalizeLanguage(cached.runtime.profile.language);
+    }
+  } catch {}
+  return "en";
+}
+
 async function openCandidatesUi(ctx: ExtensionContext): Promise<void> {
   const runtimeResult = await getLocalRuntime();
   if (!runtimeResult.ok) {
@@ -127,9 +137,9 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
       const parsed = parseMemoryCommand(args);
       if (ctx.mode !== "tui") return;
       const fallbackLanguage: Language = "en";
-      if (!parsed) {
+      if (!parsed || parsed.kind === "help") {
         try {
-          ctx.ui.notify(helpText(fallbackLanguage), "error");
+          ctx.ui.notify(helpText(resolveHelpLanguage()), parsed ? "info" : "error");
         } catch {}
         return;
       }
@@ -169,9 +179,6 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
       const localRuntime = localRuntimeResult.runtime;
       try {
         switch (parsed.kind) {
-        case "help":
-          ctx.ui.notify(helpText(language), "info");
-          return;
         case "status": {
           const session = getSessionState(ctx.sessionManager.getSessionId());
           let projectLine = t(language, "memory.status.project.disabled", {

@@ -181,6 +181,14 @@ Current explicit instruction overrides old memory. An explicit long-term “reme
 - Missing translations fall back to English.
 - Memory content remains in its source language; technical identifiers remain unchanged; no translated duplicate is stored.
 
+## Command help
+
+- `/memory help` and bare `/memory` display the same detailed, purpose-grouped command list in the persisted Memory UI language (`zh` or `en`) when a successful process-wide cached local runtime already exists, falling back to English when it does not. Help never starts local runtime initialization and therefore does not create SQLite or a Profile.
+- Unknown commands or invalid arguments display that same help as an error.
+- Help is TUI-only, remains available when Hindsight is unavailable, and performs no Hindsight I/O or SQLite mutation.
+- The help lists every supported command form, including status, session on/off, remember/update/forget, list/show/last, candidate review, cleanup, language, `/memory reflect profile <query>`, and `/memory reflect project <query>`, plus Profile types `preference|habit` and Project types `project_fact|decision|lesson|task_state|inference`.
+- There is no `/memory extract` command; candidates are created only by settled automatic extraction.
+
 ## Explicit non-goals
 
 - Replacing Pi Session, Compaction, AGENTS.md, or Skills.

@@ -2,6 +2,9 @@
 
 ## Current task and plan
 
+- Current task: `/memory help` is **implemented and accepted locally by Pi**, but remains uncommitted. Package version is prepared as **`0.2.0`**. The command and bare `/memory` show the same grouped bilingual explanation of every supported command; malformed commands show the same help as an error. Help uses only an already-resolved cached local runtime for language and otherwise falls back to English, so a fresh help-only profile does not create SQLite/Profile state. Cursor Agent was explicitly selected after Claude Code rate limiting; Grok 4.6 was requested, actual model was not present in wrapper evidence and is therefore unproven. Cursor chat `ac2ba38b-f16c-4c97-8883-fdb88249a6cf`; evidence `/tmp/pi-memory-hindsight-memory-help-cursor-grok46.json` and narrow fix `/tmp/pi-memory-hindsight-memory-help-cursor-grok46-fix.json`.
+- Current `0.2.0` help verification: Pi independently passed focused tests (**3 files / 50 tests**), full `npm test` (**16 files / 278 tests**), typecheck, build, `npm audit --omit=dev` (**0 vulnerabilities**), pack dry-run (**65 files**, package filename `pi-memory-hindsight-0.2.0.tgz`, LICENSE/source entry present, no `dist/`), `git diff --check`, and NUL scan. Packaged Pi acceptance has all **21** booleans true and `pending=[]`; evidence `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `2c3e9eab6d04bec7ffa10041b1564994c810505abcfecf54353798a27f4d1d23`. No live Hindsight test was needed or run.
+- Worktree note: `.pi/memory.json` remains a pre-existing user-owned untracked file and was not read, modified, or staged. The help task adds untracked `.pi/tasks/memory-help-command.md` and `docs/memory-help-command.md`, plus tracked source/test/docs changes. Coding executor must not commit, push, tag, or create a Release; Pi is authorized to do those after final acceptance of `v0.2.0`.
 - Milestone: memory retention and discovery follow-up implemented.
 - Design status: follow-up policy approved; coding authorization granted for Cursor Agent.
 - Implementation status: retention/discovery follow-up is **accepted and committed locally**. After a real-profile smoke exposed that Hindsight 0.8.3 stores governance metadata in document GET `document_metadata` while list units return `metadata: null`, Cursor chat `93f0fce7-e569-4b4c-ac14-934a2ef1a61e` implemented dual exact-read validation and removed the unused `/memory extract` command surface (settled automatic extraction unchanged). **Publication-readiness (GitHub direct install, option A)** is implemented: `pi.extensions` loads `./src/index.ts`, root `LICENSE` matches remote Apache-2.0 (`c71d239d…`), `package.json` `license` is `Apache-2.0`, npm pack includes `LICENSE` (**64 files**), Pi core imports are `peerDependencies` with `"*"` ranges (exact versions remain in `devDependencies`), deny-only root `allowScripts` `{ "pi-memory-hindsight": false }` declares this package's own install scripts are not needed, README documents `pi install https://github.com/stones-hub/pi-memory-hindsight.git`, loopback `git daemon` + real `pi install` git-source acceptance exists, and packaged Pi acceptance waits for `id=` at remember time. **Publication acceptance was signed off** after Pi independently reran the release-critical checks and an independent focused rereview returned `VERDICT: PASS`. User authorized commit, remote setup, push, tag, and release; `main`, annotated tag `v0.1.0`, and GitHub Release are published. The immutable release tag points to `717c12e76110cc6a2f58ee1e7657a36c9db7bce7`.
@@ -74,9 +77,10 @@
 
 ## Next step
 
-1. `v0.1.0` publication is complete. Any future code change, tag/release, npm publication, or machine deployment requires fresh authorization.
-2. If committing, preserve evidence file paths and SHA-256 hashes recorded in this handover and `.pi/tasks/memory-retention-and-discovery-followup.md`.
-3. Do not treat executor self-report or historical evidence hashes as substitutes for the final Pi evidence above.
+1. Package version is now `0.2.0` for the accepted `/memory help` candidate. Coding executor must not commit, push, tag, create a GitHub Release, publish to npm, or deploy.
+2. User has authorized Pi, after final acceptance, to commit, push `origin/main`, annotated tag `v0.2.0`, and GitHub Release. Historical public tag `v0.1.0` remains `717c12e76110cc6a2f58ee1e7657a36c9db7bce7`.
+3. If committing, preserve evidence file paths and SHA-256 hashes recorded in this handover and `.pi/tasks/memory-retention-and-discovery-followup.md`.
+4. Do not treat executor self-report or historical evidence hashes as substitutes for the final Pi evidence above.
 
 ## Executor session
 
