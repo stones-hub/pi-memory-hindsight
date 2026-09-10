@@ -1,6 +1,21 @@
 # Handover
 
-## Current task and plan
+## Accepted v0.1.1 release candidate: Reflect long-running timeout
+
+- Task: `.pi/tasks/reflect-long-running-timeout.md`; decision: `docs/decisions/reflect-long-running-timeout.md` (approved 2026-09-10).
+- Integrated baseline: `main` at `916747bc5e07ddc132ad0a68734171593a4bdd04`; the implementation was originally developed from immutable `v0.1.0` commit `717c12e76110cc6a2f58ee1e7657a36c9db7bce7`, then safely rebased by stash/switch/pop onto the remote `main` documentation follow-up with no conflict. Version is bumped to `0.1.1` in `package.json` and `package-lock.json`.
+- Status: **Pi independently accepted the local v0.1.1 release candidate on 2026-09-10** after diff review, automated regression, packaged Pi acceptance, Git-install acceptance, independent review, and a real Pi TUI + loopback Hindsight 0.8.3 Reflect run. User authorized commit, push, annotated `v0.1.1` tag, and GitHub Release; publication state must be updated after each operation is proven.
+- What changed: `src/provider/http-client.ts` adds a separate 180-second Reflect ceiling and one shared clamp used by the real request path; `src/provider/hindsight-client.ts` and `src/provider/hindsight-adapter.ts` thread it only into Reflect; `src/governance/reflect-service.ts` distinguishes external cancellation, timeout, and generic failure; `src/i18n/messages.ts` adds localized timeout text; README documents waiting/cancellation; focused provider/governance tests cover the new behavior.
+- Preserved contracts: ordinary Recall and governed provider requests remain capped at 10 seconds; mutation leases still derive only from `PROVIDER_HTTP_TIMEOUT_MS`; Reflect remains manual, read-only, bounded, cancellable, and never auto-saved.
+- Pi independent verification on the versioned final tree: `npm test` **16 files / 280 tests**; `npm run typecheck`; `npm run build`; `npm audit --omit=dev` **0 vulnerabilities**; `git diff --check`; NUL scan clean.
+- Release artifact: `/tmp/pi-memory-hindsight-release-v0.1.1/pi-memory-hindsight-0.1.1.tgz`, **65 files**, includes `LICENSE` and `src/index.ts`, excludes `dist/`; SHA-256 `fc3916352a234206c14d926a802b1c339e07155d35e0a5169f3323f2fd9d4976`.
+- Packaged Pi acceptance: all required booleans true and `pending=[]`; evidence `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `e2cec5586834014965b4e5bb5a7fb90cf3bf2b152a4d3d54e7e238af9067260a`.
+- Loopback Git-install acceptance: all booleans true; evidence `/tmp/pi-memory-hindsight-git-install-acceptance.json`, SHA-256 `b71322e4700df0615f0e0b83af11d847a579d8de1fff5ab0f0dc3a7037dfcd7f`.
+- Independent final review: **PASS**, Claude Code session `af1f652a-6952-44ed-bc3f-9b2e6d0e0a57`, canonical model `claude-sonnet-5`; evidence `/tmp/pi-memory-hindsight-reflect-timeout-review-final.json`.
+- Real business acceptance: current workspace candidate loaded through the installed Git package in real Pi TUI; `/memory reflect profile 总结我已记录的个人偏好。` was confirmed and returned a non-empty summary after Hindsight completed in **20.046 seconds**, proving it crossed the old 10-second failure boundary. Pi exited cleanly; evidence `/tmp/pi-memory-hindsight-reflect-live-result-final.json`, SHA-256 `40d5f28add70026a4728539071c209ca583bf8a0284f5b6c579a35a0351133fa`. Hindsight remained healthy, and live Profile counts stayed unchanged (`memories=4`, active `memories=1`, `candidates=2`).
+- Implementation executor: Claude Code session `f632d4a8-917c-43b6-ad3f-ee0951edf7c9`, canonical model `claude-sonnet-5`. An earlier independent review found duplicate clamp logic and missing docs; the same implementation session made the narrow fix, and the fresh final review passed.
+
+## Previously accepted milestone
 
 - Milestone: memory retention and discovery follow-up implemented.
 - Design status: follow-up policy approved; coding authorization granted for Cursor Agent.

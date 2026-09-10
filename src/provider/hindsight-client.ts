@@ -228,15 +228,17 @@ export class HindsightClient {
     );
   }
 
+  /** `timeoutMs`: the caller-supplied Reflect ceiling (already clamped by the adapter). */
   reflect(
     bankId: string,
     request: ReflectRequestWire,
     signal?: AbortSignal,
+    timeoutMs?: number,
   ): Promise<ProviderResult<ReflectResponseWire>> {
     return this.http.request<ReflectResponseWire>(
       "POST",
       `/v1/default/banks/${encodeURIComponent(bankId)}/reflect`,
-      { body: request, ...this.withSignal(signal) },
+      { body: request, ...(timeoutMs !== undefined ? { timeoutMs } : {}), ...this.withSignal(signal) },
     );
   }
 }

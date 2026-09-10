@@ -17,7 +17,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { HttpClient } from "./http-client.js";
+import { HttpClient, clampReflectHttpTimeoutMs } from "./http-client.js";
 import { HindsightClient } from "./hindsight-client.js";
 import {
   validateBankId,
@@ -43,6 +43,13 @@ export interface HindsightAdapterOptions {
   baseUrl: string;
   apiKey?: string | undefined;
   timeoutMs?: number;
+  /**
+   * Per-call timeout for the manual, read-only Reflect request only
+   * (docs/decisions/reflect-long-running-timeout.md). Defaults to and is
+   * clamped at `REFLECT_HTTP_TIMEOUT_MS`; does not affect Recall, governed
+   * mutations, or any other ordinary request's `PROVIDER_HTTP_TIMEOUT_MS` ceiling.
+   */
+  reflectTimeoutMs?: number;
 }
 
 const SUPPORTED_API_VERSION = "0.8.3";
@@ -165,6 +172,8 @@ export class HindsightAdapter {
   private readonly client: HindsightClient;
   /** Effective per-request HTTP timeout after ceiling clamp (≤ PROVIDER_HTTP_TIMEOUT_MS). */
   readonly httpTimeoutMs: number;
+  /** Effective Reflect-only timeout after ceiling clamp (≤ REFLECT_HTTP_TIMEOUT_MS). */
+  readonly reflectTimeoutMs: number;
 
   constructor(options: HindsightAdapterOptions) {
     const http = new HttpClient({
@@ -173,6 +182,7 @@ export class HindsightAdapter {
       ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     });
     this.httpTimeoutMs = http.timeoutMs;
+    this.reflectTimeoutMs = clampReflectHttpTimeoutMs(options.reflectTimeoutMs);
     this.client = new HindsightClient(http);
   }
 
@@ -822,6 +832,7 @@ export class HindsightAdapter {
       input.bankId,
       { query: queryValue.query, budget: input.budget, max_tokens: queryValue.maxTokens },
       signal,
+      this.reflectTimeoutMs,
     );
     if (!result.ok) {
       return failLike(result, `reflect failed: ${result.reason}`);

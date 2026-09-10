@@ -24,6 +24,22 @@ export function clampProviderHttpTimeoutMs(requested?: number): number {
   return Math.min(requested, PROVIDER_HTTP_TIMEOUT_MS);
 }
 
+/**
+ * Separate ceiling for the manual, read-only Reflect request only
+ * (docs/decisions/reflect-long-running-timeout.md). Ordinary provider
+ * requests (including Recall and governed mutations) keep the
+ * `PROVIDER_HTTP_TIMEOUT_MS` ceiling and are unaffected by this constant.
+ */
+export const REFLECT_HTTP_TIMEOUT_MS = 180_000;
+
+/** Clamps a requested per-call timeout override to the Reflect ceiling. */
+export function clampReflectHttpTimeoutMs(requested?: number): number {
+  if (requested === undefined || !Number.isFinite(requested) || requested <= 0) {
+    return REFLECT_HTTP_TIMEOUT_MS;
+  }
+  return Math.min(requested, REFLECT_HTTP_TIMEOUT_MS);
+}
+
 const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_REQUEST_BYTES = 128 * 1024;
 
@@ -49,6 +65,13 @@ export interface RequestOptions {
   body?: unknown;
   /** External cancellation, e.g. extension shutdown. Combined with the per-call timeout. */
   signal?: AbortSignal;
+  /**
+   * Per-call timeout override, used only by the manual Reflect request
+   * (docs/decisions/reflect-long-running-timeout.md). Hard-capped at
+   * `REFLECT_HTTP_TIMEOUT_MS` regardless of the value passed in. Omit for
+   * every ordinary request so it keeps the client's `PROVIDER_HTTP_TIMEOUT_MS` ceiling.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -134,7 +157,14 @@ export class HttpClient {
     options: RequestOptions = {},
   ): Promise<ProviderResult<T>> {
     const url = buildUrl(this.opts.baseUrl, path, options.query);
-    const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
+    // Single shared clamp policy for any per-call override, so the production
+    // request path and `clampReflectHttpTimeoutMs()` can never drift apart.
+    // Omitting `timeoutMs` keeps the client's own default (`this.timeoutMs`,
+    // itself bounded by `PROVIDER_HTTP_TIMEOUT_MS`); an invalid/nonpositive
+    // override falls back to `REFLECT_HTTP_TIMEOUT_MS`, matching the helper.
+    const requestTimeoutMs =
+      options.timeoutMs !== undefined ? clampReflectHttpTimeoutMs(options.timeoutMs) : this.timeoutMs;
+    const timeoutSignal = AbortSignal.timeout(requestTimeoutMs);
     const signal = options.signal ? AbortSignal.any([timeoutSignal, options.signal]) : timeoutSignal;
     const maxBytes = this.opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
     const maxRequestBytes = this.opts.maxRequestBytes ?? DEFAULT_MAX_REQUEST_BYTES;

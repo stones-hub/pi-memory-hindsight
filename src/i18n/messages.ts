@@ -100,6 +100,7 @@ const EN: Record<string, string> = {
   "reflect.invalid_query": "Reflect query was rejected locally.",
   "reflect.project_unavailable": "Project memory is unavailable for reflect.",
   "reflect.failed": "Reflect failed.",
+  "reflect.timeout": "Reflect timed out before Hindsight finished (180s limit). Try again or narrow your query.",
   "reflect.result": "{text}",
 };
 
@@ -176,6 +177,7 @@ const ZH: Record<string, string> = {
   "reflect.invalid_query": "Reflect 查询已在本地被拒绝。",
   "reflect.project_unavailable": "项目记忆当前不可用于 Reflect。",
   "reflect.failed": "Reflect 失败。",
+  "reflect.timeout": "Reflect 在 Hindsight 完成前超时（180 秒上限）。请重试或缩小查询范围。",
   "reflect.result": "{text}",
 };
 

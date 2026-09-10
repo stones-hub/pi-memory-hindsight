@@ -997,6 +997,56 @@ describe("slice 4 governance commands and tools", () => {
     expect(runtime.repos.audit.listRecent(10)).toHaveLength(0);
   });
 
+  it("shows a distinct localized timeout message when reflect exceeds its own long-running ceiling", async () => {
+    const runtime = makeRuntime();
+    runtime.profile.language = "en";
+    runtime.adapter.reflect.mockResolvedValue({
+      ok: false,
+      reason: "hindsight request timed out: POST /v1/default/banks/x/reflect",
+      category: "timeout",
+    });
+    resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: "repo", bankId: projectBankId("repo") });
+    const ctx = makeContext();
+
+    const result = await reflectMemory(runtime as any, ctx as any, "project", "What matters?");
+
+    expect(result).toEqual({ outcome: "rejected", reason: t("en", "reflect.timeout") });
+    expect(result).not.toEqual({ outcome: "rejected", reason: t("en", "reflect.failed") });
+  });
+
+  it("treats reflect's external cancellation as cancelled, not as a timeout or generic failure", async () => {
+    const runtime = makeRuntime();
+    runtime.profile.language = "en";
+    runtime.adapter.reflect.mockResolvedValue({
+      ok: false,
+      reason: "hindsight request cancelled: POST /v1/default/banks/x/reflect",
+      category: "aborted",
+    });
+    resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: "repo", bankId: projectBankId("repo") });
+    const ctx = makeContext();
+
+    const result = await reflectMemory(runtime as any, ctx as any, "project", "What matters?");
+
+    expect(result).toEqual({ outcome: "cancelled" });
+  });
+
+  it("keeps a generic redacted failure message for non-timeout, non-aborted reflect failures", async () => {
+    const runtime = makeRuntime();
+    runtime.profile.language = "en";
+    runtime.adapter.reflect.mockResolvedValue({
+      ok: false,
+      reason: "hindsight reflect failed: HTTP 502",
+      category: "http",
+      status: 502,
+    });
+    resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: "repo", bankId: projectBankId("repo") });
+    const ctx = makeContext();
+
+    const result = await reflectMemory(runtime as any, ctx as any, "project", "What matters?");
+
+    expect(result).toEqual({ outcome: "rejected", reason: t("en", "reflect.failed") });
+  });
+
   it("candidate reviewer controller renders, filters, edits, rejects, and batch rejects safely", async () => {
     const runtime = makeRuntime();
     resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
