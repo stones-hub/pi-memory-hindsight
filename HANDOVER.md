@@ -4,7 +4,7 @@
 
 - Milestone: memory retention and discovery follow-up implemented.
 - Design status: follow-up policy approved; coding authorization granted for Cursor Agent.
-- Implementation status: retention/discovery follow-up is **accepted and committed locally**. After a real-profile smoke exposed that Hindsight 0.8.3 stores governance metadata in document GET `document_metadata` while list units return `metadata: null`, Cursor chat `93f0fce7-e569-4b4c-ac14-934a2ef1a61e` implemented dual exact-read validation and removed the unused `/memory extract` command surface (settled automatic extraction unchanged). **Publication-readiness (GitHub direct install, option A)** is implemented: `pi.extensions` loads `./src/index.ts`, root `LICENSE` matches remote Apache-2.0 (`c71d239d…`), `package.json` `license` is `Apache-2.0`, npm pack includes `LICENSE` (**64 files**), Pi core imports are `peerDependencies` with `"*"` ranges (exact versions remain in `devDependencies`), deny-only root `allowScripts` `{ "pi-memory-hindsight": false }` declares this package's own install scripts are not needed, README documents `pi install https://github.com/stones-hub/pi-memory-hindsight.git`, loopback `git daemon` + real `pi install` git-source acceptance exists, and packaged Pi acceptance waits for `id=` at remember time. **Publication acceptance was signed off** after Pi independently reran the release-critical checks and an independent focused rereview returned `VERDICT: PASS`. User authorized commit, remote setup, push, tag, and release; push/tag/release are in progress.
+- Implementation status: retention/discovery follow-up is **accepted and committed locally**. After a real-profile smoke exposed that Hindsight 0.8.3 stores governance metadata in document GET `document_metadata` while list units return `metadata: null`, Cursor chat `93f0fce7-e569-4b4c-ac14-934a2ef1a61e` implemented dual exact-read validation and removed the unused `/memory extract` command surface (settled automatic extraction unchanged). **Publication-readiness (GitHub direct install, option A)** is implemented: `pi.extensions` loads `./src/index.ts`, root `LICENSE` matches remote Apache-2.0 (`c71d239d…`), `package.json` `license` is `Apache-2.0`, npm pack includes `LICENSE` (**64 files**), Pi core imports are `peerDependencies` with `"*"` ranges (exact versions remain in `devDependencies`), deny-only root `allowScripts` `{ "pi-memory-hindsight": false }` declares this package's own install scripts are not needed, README documents `pi install https://github.com/stones-hub/pi-memory-hindsight.git`, loopback `git daemon` + real `pi install` git-source acceptance exists, and packaged Pi acceptance waits for `id=` at remember time. **Publication acceptance was signed off** after Pi independently reran the release-critical checks and an independent focused rereview returned `VERDICT: PASS`. User authorized commit, remote setup, push, tag, and release; `main`, annotated tag `v0.1.0`, and GitHub Release are published. The immutable release tag points to `717c12e76110cc6a2f58ee1e7657a36c9db7bce7`.
 - Baseline commit: `4fce7f1ef466cece83de34579b51df6f34c2e1c1` plus intentional README rewrite and task file.
 - Compatibility: upgraded SQLite may still reference Hindsight documents created under the pre-fix text-hash document formula with legacy metadata (`logical_id=text_hash`, no `content_hash`). Recall/forget accept only that legacy format or the current row-id formula when locally proven; shared Project recall without a local row rejects legacy. Governed updates reuse the stored legacy document id and write current metadata. Formal expiry and list/show use the same locator rules.
 
@@ -60,9 +60,10 @@
 - Baseline HEAD: `4fce7f1ef466cece83de34579b51df6f34c2e1c1`.
 - Feature commit: `8b47280` (`feat: add governed retention, discovery, and GitHub source install`).
 - Remote-history merge commit: `40fd072`; remote initial commit `65a6b32` was preserved with no force-push.
-- Current branch: local `main`; working tree will be finalized with this handover/README release-state update.
+- Published release commit: `717c12e76110cc6a2f58ee1e7657a36c9db7bce7`; annotated tag `v0.1.0` resolves to that exact commit.
+- Current branch: local `main`, tracking `origin/main`.
 - User authorized commit, `origin` setup, push, tag, and GitHub Release. No npm publication was requested or performed.
-- GitHub publication: manifest/README ready for option A (`pi install` Git URL); local `LICENSE` matches remote Apache-2.0 text.
+- GitHub publication: `main` and `v0.1.0` are public; Release URL: `https://github.com/stones-hub/pi-memory-hindsight/releases/tag/v0.1.0`. Public tag clone was verified to contain `src/index.ts`, matching Apache-2.0 `LICENSE`, and no `dist/index.js`.
 
 ## Non-blocking residuals (final review)
 
@@ -73,7 +74,7 @@
 
 ## Next step
 
-1. Separate user authorization is required before commit, push, publish, or deploy.
+1. `v0.1.0` publication is complete. Any future code change, tag/release, npm publication, or machine deployment requires fresh authorization.
 2. If committing, preserve evidence file paths and SHA-256 hashes recorded in this handover and `.pi/tasks/memory-retention-and-discovery-followup.md`.
 3. Do not treat executor self-report or historical evidence hashes as substitutes for the final Pi evidence above.
 
