@@ -66,6 +66,12 @@ export async function reflectMemory(
     return { outcome: "rejected", reason: t(language, "memory.unexpected_error") };
   }
   if (!result.ok) {
+    if (result.category === "aborted") {
+      return { outcome: "cancelled" };
+    }
+    if (result.category === "timeout") {
+      return { outcome: "rejected", reason: t(language, "reflect.timeout") };
+    }
     return { outcome: "rejected", reason: t(language, "reflect.failed") };
   }
   return { outcome: "ok", text: truncateUnicode(result.value.text.trim(), REFLECT_MAX_TEXT) };

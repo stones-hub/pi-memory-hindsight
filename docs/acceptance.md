@@ -7,8 +7,8 @@ Status: Slice 5 plus retention/discovery follow-up was **accepted** by Pi (2026-
 | Layer | Who runs it | What it proves | Final evidence (2026-09-09) |
 |---|---|---|---|
 | Agent/executor self-report | Coding agent during implementation | Implementation intent only; not acceptance by itself. | Chat `93f0fce7-e569-4b4c-ac14-934a2ef1a61e` |
-| Pi independent offline checks | Pi reviewer | `npm test`, typecheck, build, pack dry-run, audit, diff/NUL on uncommitted tree. | `0.2.0` candidate: **16 files / 278 tests**; typecheck/build pass; audit **0** vulns; NUL/diff clean; pack dry-run **65 files**, LICENSE/source entry present, no `dist/` |
-| Packaged Pi offline acceptance | Pi reviewer (`npm run acceptance:pi`) | Packed tarball in isolated temp dirs with mock Hindsight; **21** required booleans `true` after `/memory help`. | `0.2.0` candidate: `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `2c3e9eab6d04bec7ffa10041b1564994c810505abcfecf54353798a27f4d1d23`; `pending=[]` |
+| Pi independent offline checks | Pi reviewer | `npm test`, typecheck, build, pack dry-run, audit, diff/NUL on the merged candidate tree. | merged `0.2.0`: **16 files / 286 tests**; typecheck/build pass; audit **0** vulns; NUL/worktree/staged diff clean; pack dry-run **66 files**, LICENSE/source entry and Help/Reflect docs present, no `dist/` |
+| Packaged Pi offline acceptance | Pi reviewer (`npm run acceptance:pi`) | Packed tarball in isolated temp dirs with mock Hindsight; **21** required booleans `true` after `/memory help`. | merged `0.2.0`: `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `1e5a62cc8cb9cd53509a71832f58a48685cad7f9abe6c23ed5c4a2fa74059a61`; `pending=[]` |
 | Disposable live Hindsight contract | Pi reviewer (`npm run acceptance:hindsight:live`) | One nonce-derived bank only; never list Banks. | `/tmp/pi-memory-hindsight-acceptance-hindsight-live.json`, SHA-256 `c9408a9f…d78ca` |
 | Final read-only review | Pi reviewer | Architecture/policy/safety verdict. | **PASS**; chat `c06e5d55-4faa-4dd6-b211-99e75977423a`; SHA-256 `18b7b47f…9c1ff` |
 | Live Pi TUI against user profile | User | Not run in this follow-up. | Settings/config unchanged; local package registration may load candidate `dist/` |
@@ -31,7 +31,7 @@ Status: Slice 5 plus retention/discovery follow-up was **accepted** by Pi (2026-
 
 **Coding-agent packaged run (help peek/reflect fix, superseded by Pi rerun):** SHA-256 `a1d3fca6ce51c1526ec5f471c60829f02f21b89fb6d7011deab35229272fa1d2`.
 
-**Pi independent packaged run (current `0.2.0` candidate):** `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `2c3e9eab6d04bec7ffa10041b1564994c810505abcfecf54353798a27f4d1d23`. All **21** required booleans are `true`; `pending=[]`; isolated resources cleaned. The prior Pi pre-version-bump hash `ebf9279a…16c1` is superseded.
+**Pi independent packaged run (current merged `0.2.0` candidate):** `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `1e5a62cc8cb9cd53509a71832f58a48685cad7f9abe6c23ed5c4a2fa74059a61`. All **21** required booleans are `true`; `pending=[]`; isolated resources cleaned. Pre-merge Pi hashes `2c3e9eab…1d23` and `ebf9279a…16c1` are superseded.
 
 The isolated runner proves:
 

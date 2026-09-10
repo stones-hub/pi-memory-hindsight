@@ -1,9 +1,9 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { profileBankId } from "../src/identity/bank-id.js";
 import { HindsightAdapter } from "../src/provider/hindsight-adapter.js";
-import { HttpClient } from "../src/provider/http-client.js";
+import { HttpClient, REFLECT_HTTP_TIMEOUT_MS, clampReflectHttpTimeoutMs } from "../src/provider/http-client.js";
 import { OWNED_BANK_CONFIG_OVERRIDES } from "../src/provider/types.js";
 import { buildOwnedDocumentId } from "../src/provider/validation.js";
 
@@ -273,6 +273,67 @@ describe("HttpClient", () => {
       maxRequestBytes: 16,
     }).request("POST", "/too-big", { body: { huge: "x".repeat(100) } });
     expect(oversizedRequest).toMatchObject({ ok: false, category: "oversize" });
+  });
+
+  it("honors a per-call timeoutMs override beyond the client's own ceiling, hard-capped at REFLECT_HTTP_TIMEOUT_MS", async () => {
+    expect(clampReflectHttpTimeoutMs(1_000)).toBe(1_000);
+    expect(clampReflectHttpTimeoutMs(999_000)).toBe(REFLECT_HTTP_TIMEOUT_MS);
+    expect(clampReflectHttpTimeoutMs(undefined)).toBe(REFLECT_HTTP_TIMEOUT_MS);
+    expect(clampReflectHttpTimeoutMs(0)).toBe(REFLECT_HTTP_TIMEOUT_MS);
+
+    const server = await startMockServer();
+    server.setRoute("GET", "/slow-reflect-like", async (_req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      json(res, 200, { ok: true });
+    });
+
+    // Client's own ceiling (10ms) is far shorter than the delay; without an
+    // override this would time out, proving the override is what lets it succeed.
+    const client = new HttpClient({ baseUrl: server.baseUrl, timeoutMs: 10 });
+    expect(client.timeoutMs).toBe(10);
+    const overridden = await client.request("GET", "/slow-reflect-like", { timeoutMs: 200 });
+    expect(overridden).toMatchObject({ ok: true });
+
+    const stillDefaultCeiling = await client.request("GET", "/slow-reflect-like");
+    expect(stillDefaultCeiling).toMatchObject({ ok: false, category: "timeout" });
+  });
+
+  it("hard-caps request()'s own effective per-call timeout at REFLECT_HTTP_TIMEOUT_MS via the single shared clamp, without waiting 180s", async () => {
+    const server = await startMockServer();
+    server.setRoute("GET", "/instant", (_req, res) => json(res, 200, { ok: true }));
+    const client = new HttpClient({ baseUrl: server.baseUrl, timeoutMs: 10 });
+
+    // AbortSignal.timeout(ms) is called synchronously before the first
+    // `await` inside request(), so spying on it observes exactly the
+    // effective timeout request() computed for this call, without needing
+    // to let any timer actually fire.
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    try {
+      const overCeiling = await client.request("GET", "/instant", { timeoutMs: 999_000 });
+      expect(overCeiling).toMatchObject({ ok: true });
+      expect(timeoutSpy).toHaveBeenLastCalledWith(REFLECT_HTTP_TIMEOUT_MS);
+
+      // Invalid/nonpositive overrides must fall back to the same deliberate
+      // ceiling as `clampReflectHttpTimeoutMs(undefined)`, not an ad hoc value.
+      for (const invalid of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+        timeoutSpy.mockClear();
+        const result = await client.request("GET", "/instant", { timeoutMs: invalid });
+        expect(result).toMatchObject({ ok: true });
+        expect(timeoutSpy).toHaveBeenLastCalledWith(REFLECT_HTTP_TIMEOUT_MS);
+      }
+
+      // Omitting the override keeps using the client's own (here 10ms) ceiling.
+      timeoutSpy.mockClear();
+      await client.request("GET", "/instant");
+      expect(timeoutSpy).toHaveBeenLastCalledWith(10);
+
+      // An in-bounds override is passed through unchanged, matching clampReflectHttpTimeoutMs.
+      timeoutSpy.mockClear();
+      await client.request("GET", "/instant", { timeoutMs: 45_000 });
+      expect(timeoutSpy).toHaveBeenLastCalledWith(45_000);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 });
 
@@ -847,6 +908,70 @@ describe("HindsightAdapter", () => {
 
     const inputRejected = await adapter.reflect({ bankId: VALID_BANK_ID, query: " ", budget: "low", maxTokens: 80 });
     expect(inputRejected).toMatchObject({ ok: false, category: "validation" });
+  });
+
+  it("defaults reflectTimeoutMs to REFLECT_HTTP_TIMEOUT_MS, independent of the ordinary httpTimeoutMs ceiling", () => {
+    const adapter = new HindsightAdapter({ baseUrl: "http://127.0.0.1:9" });
+    expect(adapter.httpTimeoutMs).toBe(10_000);
+    expect(adapter.reflectTimeoutMs).toBe(REFLECT_HTTP_TIMEOUT_MS);
+
+    const overridden = new HindsightAdapter({ baseUrl: "http://127.0.0.1:9", reflectTimeoutMs: 60_000 });
+    expect(overridden.reflectTimeoutMs).toBe(60_000);
+
+    const clamped = new HindsightAdapter({ baseUrl: "http://127.0.0.1:9", reflectTimeoutMs: 999_000 });
+    expect(clamped.reflectTimeoutMs).toBe(REFLECT_HTTP_TIMEOUT_MS);
+  });
+
+  it("gives reflect a distinct, longer request budget than ordinary requests on the same adapter, and still times out past its own ceiling", async () => {
+    const server = await startMockServer();
+    const encodedBank = encodeURIComponent(VALID_BANK_ID);
+    server.setRoute("POST", `/v1/default/banks/${encodedBank}/reflect`, async (_req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      json(res, 200, { text: "slow but successful summary" });
+    });
+    server.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, async (_req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      json(res, 200, { results: [] });
+    });
+
+    // The ordinary ceiling (10ms) is far shorter than the 40ms server delay,
+    // so recall must time out while reflect (200ms budget) succeeds.
+    const adapter = new HindsightAdapter({ baseUrl: server.baseUrl, timeoutMs: 10, reflectTimeoutMs: 200 });
+    expect(adapter.httpTimeoutMs).toBe(10);
+    expect(adapter.reflectTimeoutMs).toBe(200);
+
+    const reflected = await adapter.reflect({ bankId: VALID_BANK_ID, query: "summarize", budget: "low", maxTokens: 80 });
+    expect(reflected).toEqual({ ok: true, value: { text: "slow but successful summary" } });
+
+    const recalled = await adapter.recall({ bankId: VALID_BANK_ID, query: "summarize", budget: "low", maxTokens: 80 });
+    expect(recalled).toMatchObject({ ok: false, category: "timeout" });
+
+    const server2 = await startMockServer();
+    server2.setRoute("POST", `/v1/default/banks/${encodedBank}/reflect`, async (_req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      json(res, 200, { text: "too slow" });
+    });
+    const tightAdapter = new HindsightAdapter({ baseUrl: server2.baseUrl, reflectTimeoutMs: 20 });
+    const timedOut = await tightAdapter.reflect({ bankId: VALID_BANK_ID, query: "summarize", budget: "low", maxTokens: 80 });
+    expect(timedOut).toMatchObject({ ok: false, category: "timeout" });
+  });
+
+  it("lets external cancellation abort reflect promptly, without waiting for the reflect ceiling and without being mislabeled as timeout", async () => {
+    const server = await startMockServer();
+    const encodedBank = encodeURIComponent(VALID_BANK_ID);
+    server.setRoute("POST", `/v1/default/banks/${encodedBank}/reflect`, async (_req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      json(res, 200, { text: "never seen" });
+    });
+    const adapter = new HindsightAdapter({ baseUrl: server.baseUrl, reflectTimeoutMs: 5_000 });
+    const controller = new AbortController();
+    const pending = adapter.reflect(
+      { bankId: VALID_BANK_ID, query: "summarize", budget: "low", maxTokens: 80 },
+      controller.signal,
+    );
+    setTimeout(() => controller.abort(), 10);
+    const result = await pending;
+    expect(result).toMatchObject({ ok: false, category: "aborted" });
   });
 
   it("forgets via document delete and requires verified absence postconditions, including idempotent retry semantics", async () => {
