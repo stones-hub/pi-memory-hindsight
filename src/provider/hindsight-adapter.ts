@@ -16,6 +16,7 @@
  * the exact owned bank ID it was asked to operate on.
  */
 
+import { createHash } from "node:crypto";
 import { HttpClient } from "./http-client.js";
 import { HindsightClient } from "./hindsight-client.js";
 import {
@@ -82,6 +83,68 @@ function validateMetadata(metadata: unknown): Record<string, string> | null {
     if (value.length > MAX_METADATA_VALUE_LENGTH) return null;
   }
   return metadata;
+}
+
+function hashNormalizedText(text: string): string {
+  return createHash("sha256").update(text.trim()).digest("hex");
+}
+
+function metadataRecordsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+  const aKeys = Object.keys(a).sort();
+  const bKeys = Object.keys(b).sort();
+  if (aKeys.length !== bKeys.length) return false;
+  for (let i = 0; i < aKeys.length; i++) {
+    const key = aKeys[i]!;
+    if (key !== bKeys[i]) return false;
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+type ValidatedOwnedDocument = {
+  originalText: string;
+  documentMetadata: Record<string, string>;
+};
+
+function validateOwnedDocumentWire(
+  raw: unknown,
+  bankId: string,
+  documentId: string,
+  expectedTextHash: string,
+): { ok: true; value: ValidatedOwnedDocument } | { ok: false; reason: string } {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { ok: false, reason: "document response was malformed" };
+  }
+  const doc = raw as Record<string, unknown>;
+  if (doc.id !== documentId) {
+    return { ok: false, reason: "stored document id does not match" };
+  }
+  if (doc.bank_id !== bankId) {
+    return { ok: false, reason: "stored bank id does not match" };
+  }
+  if (
+    typeof doc.original_text !== "string" ||
+    doc.original_text.length === 0 ||
+    doc.original_text.length > MAX_TEXT_LENGTH
+  ) {
+    return { ok: false, reason: "document original text is invalid" };
+  }
+  if (typeof doc.content_hash !== "string" || !/^[0-9a-f]{64}$/.test(doc.content_hash)) {
+    return { ok: false, reason: "document content hash is invalid" };
+  }
+  const normalizedText = doc.original_text.trim();
+  const normalizedHash = hashNormalizedText(doc.original_text);
+  if (doc.content_hash !== expectedTextHash || doc.content_hash !== normalizedHash) {
+    return { ok: false, reason: "document content hash mismatch" };
+  }
+  const documentMetadata = validateMetadata(doc.document_metadata);
+  if (!documentMetadata) {
+    return { ok: false, reason: "document metadata is invalid" };
+  }
+  if (doc.memory_unit_count !== 1) {
+    return { ok: false, reason: "document memory unit count is not exactly one" };
+  }
+  return { ok: true, value: { originalText: normalizedText, documentMetadata } };
 }
 
 function validateTags(tags: unknown): string[] | null {
@@ -369,6 +432,165 @@ export class HindsightAdapter {
       };
     }
     return { ok: true, value: { unitId: unit.id } };
+  }
+
+  /**
+   * Exact owned-document retrieval for list/show. Never enumerates banks.
+   * Performs one document GET and one list-by-document read under the same
+   * signal, cross-checks body/hash/metadata, and returns governance metadata
+   * from document_metadata (unit metadata may be null on real 0.8.3).
+   */
+  async fetchExactOneUnitDocument(
+    bankId: string,
+    documentId: string,
+    expectedTextHash: string,
+    signal?: AbortSignal,
+  ): Promise<
+    ProviderResult<{ text: string; unitId: string; metadata: Record<string, string> | null }>
+  > {
+    const bankIdCheck = validateBankId(bankId);
+    if (!bankIdCheck.ok) {
+      return { ok: false, reason: bankIdCheck.reason ?? "invalid bank id", category: "validation" };
+    }
+    const documentIdCheck = validateDocumentId(documentId);
+    if (!documentIdCheck.ok) {
+      return { ok: false, reason: documentIdCheck.reason ?? "invalid document id", category: "validation" };
+    }
+    if (!/^[0-9a-f]{64}$/.test(expectedTextHash)) {
+      return { ok: false, reason: "invalid expected text hash", category: "validation" };
+    }
+
+    const [getDoc, listed] = await Promise.all([
+      this.client.getDocument(bankId, documentId, signal),
+      this.client.listMemoriesByDocument(bankId, documentId, 2, signal),
+    ]);
+
+    if (!getDoc.ok) {
+      return {
+        ok: false,
+        reason: `exact document fetch failed: ${getDoc.reason}`,
+        category: getDoc.category,
+        ...(getDoc.status !== undefined ? { status: getDoc.status } : {}),
+        ambiguous: true,
+      };
+    }
+    const validatedDoc = validateOwnedDocumentWire(getDoc.value, bankId, documentId, expectedTextHash);
+    if (!validatedDoc.ok) {
+      return {
+        ok: false,
+        reason: `exact document fetch failed: ${validatedDoc.reason}`,
+        category: "validation",
+        ambiguous: true,
+      };
+    }
+
+    if (!listed.ok) {
+      return {
+        ok: false,
+        reason: `exact document fetch failed: ${listed.reason}`,
+        category: listed.category,
+        ...(listed.status !== undefined ? { status: listed.status } : {}),
+        ambiguous: true,
+      };
+    }
+    const pagination = validateListWindow(listed.value.total, listed.value.limit, listed.value.offset);
+    if (!pagination.ok || !Array.isArray(listed.value.items)) {
+      return {
+        ok: false,
+        reason: "exact document fetch failed: list response was malformed",
+        category: "validation",
+        ambiguous: true,
+      };
+    }
+    const liveItems = listed.value.items.filter((item) => item.state === undefined || item.state === "valid");
+    if (
+      listed.value.offset !== 0 ||
+      listed.value.limit < 2 ||
+      liveItems.length > listed.value.total ||
+      listed.value.total !== liveItems.length
+    ) {
+      return {
+        ok: false,
+        reason: "exact document fetch failed: list pagination was inconsistent",
+        category: "validation",
+        ambiguous: true,
+      };
+    }
+    if (liveItems.length === 0) {
+      return {
+        ok: false,
+        reason: "exact document fetch failed: document has no live units",
+        category: "validation",
+      };
+    }
+    if (liveItems.length !== 1) {
+      return {
+        ok: false,
+        reason: `exact document fetch failed: expected exactly one live unit, found ${liveItems.length}`,
+        category: "validation",
+        ambiguous: true,
+      };
+    }
+    const unit = liveItems[0]!;
+    if (unit.document_id !== documentId) {
+      return {
+        ok: false,
+        reason: "exact document fetch failed: stored document id does not match",
+        category: "validation",
+        ambiguous: true,
+      };
+    }
+    if (typeof unit.id !== "string" || unit.id.length === 0) {
+      return {
+        ok: false,
+        reason: "exact document fetch failed: unit id is invalid",
+        category: "validation",
+        ambiguous: true,
+      };
+    }
+    if (typeof unit.text !== "string" || unit.text.length === 0 || unit.text.length > MAX_TEXT_LENGTH) {
+      return {
+        ok: false,
+        reason: "exact document fetch failed: unit text is invalid",
+        category: "validation",
+      };
+    }
+    const normalizedUnitText = unit.text.trim();
+    const unitHash = hashNormalizedText(unit.text);
+    if (unitHash !== expectedTextHash || unitHash !== hashNormalizedText(validatedDoc.value.originalText)) {
+      return {
+        ok: false,
+        reason: "exact document fetch failed: text hash mismatch",
+        category: "validation",
+      };
+    }
+    if (normalizedUnitText !== validatedDoc.value.originalText) {
+      return {
+        ok: false,
+        reason: "exact document fetch failed: unit text does not match document original text",
+        category: "validation",
+        ambiguous: true,
+      };
+    }
+    const unitMetadata = validateMetadata(unit.metadata);
+    if (unit.metadata !== null && unit.metadata !== undefined) {
+      if (!unitMetadata || !metadataRecordsEqual(unitMetadata, validatedDoc.value.documentMetadata)) {
+        return {
+          ok: false,
+          reason: "exact document fetch failed: unit metadata does not match document metadata",
+          category: "validation",
+          ambiguous: true,
+        };
+      }
+    }
+    return {
+      ok: true,
+      value: {
+        text: normalizedUnitText,
+        unitId: unit.id,
+        metadata: validatedDoc.value.documentMetadata,
+      },
+    };
   }
 
   /**

@@ -28,6 +28,48 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function listRelativeFiles(rootDir, relativeDir) {
+  const files = [];
+  async function walk(current) {
+    const entries = await fs.readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full);
+      } else {
+        files.push(path.relative(rootDir, full).split(path.sep).join("/"));
+      }
+    }
+  }
+  await walk(path.join(rootDir, relativeDir));
+  return files.sort();
+}
+
+async function readPackageManifest(packageDir) {
+  const pkg = JSON.parse(await fs.readFile(path.join(packageDir, "package.json"), "utf8"));
+  const extensions = pkg?.pi?.extensions;
+  assert(Array.isArray(extensions) && extensions.length > 0, "package pi.extensions missing");
+  return { pkg, extensions };
+}
+
+async function verifyPackedExtension(packageDir, repoRoot) {
+  const { extensions } = await readPackageManifest(packageDir);
+  for (const rel of extensions) {
+    const entryPath = path.join(packageDir, rel.replace(/^\.\//, ""));
+    assert(await fs.stat(entryPath).then(() => true, () => false), `packed extension entry missing: ${rel}`);
+  }
+  const expectedSrc = await listRelativeFiles(repoRoot, "src");
+  const packedSrc = await listRelativeFiles(packageDir, "src");
+  assert(packedSrc.length > 0, "packed src directory missing");
+  for (const rel of expectedSrc) {
+    assert(packedSrc.includes(rel), `packed artifact missing src file: ${rel}`);
+  }
+  return {
+    extensionManifestEntry: extensions[0],
+    packedSourceFileCount: packedSrc.length,
+  };
+}
+
 function redactText(value, paths) {
   if (!value) return "";
   let redacted = String(value);
@@ -59,6 +101,10 @@ function ensureRequiredSuccess(evidence) {
     "explicitUpdateReusedDocument",
     "recallInjectedWithoutPersistedRecallMessage",
     "forgetVerified",
+    "memoryIdSurfaced",
+    "memoryListShowWorked",
+    "cleanupStatusWorked",
+    "cleanupNowWorked",
     "providerOfflineDegraded",
     "printModeAutoNoop",
     "jsonModeAutoNoop",
@@ -120,6 +166,13 @@ async function listSessionFiles(sessionDir) {
     }
   }
   return files.sort();
+}
+
+function readMaintenanceSuccessAt(agentDir) {
+  const db = new DatabaseSync(path.join(agentDir, "memory", "pi-memory-hindsight.db"));
+  const row = db.prepare("SELECT last_success_at FROM maintenance_state WHERE id = 1").get();
+  db.close();
+  return row?.last_success_at ?? null;
 }
 
 function readDb(agentDir) {
@@ -265,6 +318,8 @@ async function runRpcPrompt(env, cwd, args, message, expectedMarker, timeoutMs =
 const paths = await createIsolatedPaths("pi-memory-hindsight-acceptance-");
 const evidence = {
   packedArtifactLoaded: false,
+  extensionManifestEntry: null,
+  packedSourceFileCount: 0,
   commandsRegistered: false,
   toolRegistered: false,
   sessionStatePersisted: false,
@@ -273,6 +328,10 @@ const evidence = {
   explicitUpdateReusedDocument: false,
   recallInjectedWithoutPersistedRecallMessage: false,
   forgetVerified: false,
+  memoryIdSurfaced: false,
+  memoryListShowWorked: false,
+  cleanupStatusWorked: false,
+  cleanupNowWorked: false,
   providerOfflineDegraded: false,
   printModeAutoNoop: false,
   jsonModeAutoNoop: false,
@@ -289,9 +348,10 @@ try {
   const packDir = path.join(paths.rootDir, "pack");
   const tarball = await packInto(packDir);
   const unpacked = await unpackTarball(tarball, path.join(paths.rootDir, "unpacked"));
-  const packedExtension = path.join(unpacked, "dist", "index.js");
+  const packed = await verifyPackedExtension(unpacked, ROOT);
   evidence.packedArtifactLoaded = true;
-  assert(await fs.stat(packedExtension).then(() => true, () => false), "packed extension entrypoint missing");
+  evidence.extensionManifestEntry = packed.extensionManifestEntry;
+  evidence.packedSourceFileCount = packed.packedSourceFileCount;
 
   await fs.writeFile(path.join(paths.projectDir, "README.md"), "acceptance fixture\n", "utf8");
   await writeProjectMemoryConfig(paths.projectDir, { enabled: true, project: "acceptance-project" });
@@ -348,7 +408,11 @@ try {
       { input: "/memory on\r", waitBeforeMs: 600 },
       { input: "/accept-probe session-stats\r", expect: `${ACCEPTANCE_MARKERS.sessionStats}2`, timeoutMs: 6000 },
       { input: "/accept-probe entries\r", expect: "pi-memory-hindsight:session-state", timeoutMs: 6000 },
-      { input: "/memory remember profile preference Prefer concise answers.\r", waitBeforeMs: 1200 },
+      {
+        input: "/memory remember profile preference Prefer concise answers.\r",
+        expect: "id=",
+        timeoutMs: 10_000,
+      },
       { input: "/quit\r", timeoutMs: 6000 },
     ],
     16000,
@@ -364,6 +428,11 @@ try {
     .prepare("SELECT id, document_id, text_hash FROM memories WHERE status = 'active' ORDER BY created_at DESC LIMIT 1")
     .get();
   afterRemember.db.close();
+  const updatedPreviewMarker = "short summaries";
+  const surfacedIdMatch = firstSession.output.match(/id=([0-9a-f-]{36})/i);
+  const surfacedId = surfacedIdMatch?.[1] ?? null;
+  evidence.memoryIdSurfaced =
+    Boolean(rememberedRow?.id) && Boolean(surfacedId) && surfacedId === rememberedRow.id;
   if (rememberedRow?.id) {
     const updateSession = await runPtySession(
       ["pi", ...baseArgs, "--name", "acceptance-update"],
@@ -386,9 +455,70 @@ try {
       Boolean(updatedRow) &&
       updatedRow.document_id === rememberedRow.document_id &&
       updatedRow.text_hash !== rememberedRow.text_hash &&
-      countRoutes(server.journal, "retain") >= 2;
+      countRoutes(server.journal, "retain") >= 2 &&
+      updateSession.output.includes(rememberedRow.id);
+
+    const beforeDiscoveryRetain = countRoutes(server.journal, "retain");
+    const beforeDiscoveryDelete = countRoutes(server.journal, "delete");
+    const beforeDiscoveryDocGet = countRoutes(server.journal, "document_get");
+    const beforeDiscoveryList = countRoutes(server.journal, "list");
+    const maintenanceBefore = readMaintenanceSuccessAt(paths.agentDir);
+    const discoverySession = await runPtySession(
+      ["pi", ...baseArgs, "--name", "acceptance-discovery"],
+      env,
+      paths.projectDir,
+      [
+        { input: "\r", expect: "Press ctrl+o", timeoutMs: 7000 },
+        { input: "/memory list profile\r", expect: rememberedRow.id, timeoutMs: 8000 },
+        { input: `/memory show ${rememberedRow.id}\r`, expect: "content:", timeoutMs: 8000 },
+        { input: "/memory cleanup status\r", expect: "last_success_at:", timeoutMs: 7000 },
+        { input: "/memory cleanup now\r", expect: "Memory Cleanup", timeoutMs: 8000 },
+        { input: "\r", waitBeforeMs: 400, expect: "Cleanup finished", timeoutMs: 25000 },
+        { input: "/quit\r", timeoutMs: 6000 },
+      ],
+      45000,
+    );
+    failure.discoverySession = redactText(discoverySession.output, paths);
+    const afterDiscoveryRetain = countRoutes(server.journal, "retain");
+    const afterDiscoveryDelete = countRoutes(server.journal, "delete");
+    const afterDiscoveryDocGet = countRoutes(server.journal, "document_get");
+    const afterDiscoveryList = countRoutes(server.journal, "list");
+    const maintenanceAfter = readMaintenanceSuccessAt(paths.agentDir);
+    evidence.memoryListShowWorked =
+      discoverySession.output.includes(rememberedRow.id) &&
+      discoverySession.output.includes(updatedPreviewMarker) &&
+      afterDiscoveryDocGet > beforeDiscoveryDocGet &&
+      afterDiscoveryList > beforeDiscoveryList;
+    assert(
+      afterDiscoveryDocGet > beforeDiscoveryDocGet,
+      `list/show must use exact document GET: before=${beforeDiscoveryDocGet} after=${afterDiscoveryDocGet}`,
+    );
+    assert(
+      afterDiscoveryList > beforeDiscoveryList,
+      `list/show must use exact list-by-document: before=${beforeDiscoveryList} after=${afterDiscoveryList}`,
+    );
+    evidence.cleanupStatusWorked =
+      discoverySession.output.includes("last_success_at:") &&
+      discoverySession.output.includes("automatic_due:");
+    evidence.cleanupNowWorked =
+      discoverySession.output.includes("Cleanup finished") &&
+      Boolean(maintenanceAfter) &&
+      maintenanceAfter !== maintenanceBefore;
+    assert(
+      afterDiscoveryRetain === beforeDiscoveryRetain,
+      `list/show/status must not retain: before=${beforeDiscoveryRetain} after=${afterDiscoveryRetain}`,
+    );
+    const activeAfterDiscovery = readDb(paths.agentDir);
+    const stillActive = activeAfterDiscovery.db
+      .prepare("SELECT status FROM memories WHERE id = ?")
+      .get(rememberedRow.id);
+    activeAfterDiscovery.db.close();
+    assert(stillActive?.status === "active", "discovery/cleanup must not delete the active remembered memory");
   } else {
     evidence.explicitUpdateReusedDocument = false;
+    evidence.memoryListShowWorked = false;
+    evidence.cleanupStatusWorked = false;
+    evidence.cleanupNowWorked = false;
   }
 
   const beforeRecallFiles = new Set(await listSessionFiles(paths.sessionDir));

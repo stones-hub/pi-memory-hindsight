@@ -16,7 +16,14 @@ import type { MemoryType, Scope } from "../db/types.js";
 export interface LastRecallDiagnostic {
   injectedAt: string;
   promptPreview: string;
-  items: { scope: Scope; memoryType: MemoryType; text: string }[];
+  items: {
+    scope: Scope;
+    memoryType: MemoryType;
+    text: string;
+    /** Local logical id when governed locally; null for shared Project-only recalls. */
+    memoryId: string | null;
+    readOnlyShared: boolean;
+  }[];
 }
 
 export interface PendingExtractionSnapshot {

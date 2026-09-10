@@ -1,31 +1,25 @@
 import type { GlobalRuntime } from "../runtime/global-runtime.js";
 import { isValidOwnedMemoryLocator } from "./memory-locator.js";
+import { mutationNowIso } from "./mutation-clock.js";
 import {
   beginOwnedOperation,
   boundMutationSignal,
   claimMemoryMutation,
-  forgetIdempotencyKey,
+  expireIdempotencyKey,
   applyProgressScopedOutcome,
   MutationTxRollbackError,
   runAtomicFinalization,
   postIssuanceFailureMustKeepReconciling,
+  prepareExpiryHandoff,
 } from "./mutation-ownership.js";
 
-export type ForgetResult =
-  | { outcome: "forgotten" }
+export type ExpireResult =
+  | { outcome: "expired" }
   | { outcome: "unknown"; reason: string }
   | { outcome: "rejected"; reason: string }
   | { outcome: "in_progress"; reason: string };
 
-export interface ForgetMemoryOptions {
-  signal?: AbortSignal;
-  /** When forgetting project-scoped rows: the enabled project identity from cwd. */
-  projectIdentity?: string | null;
-  /** When false, project forget must be denied. */
-  projectScopeEnabled?: boolean;
-}
-
-function finalizeForgetSuccess(
+function finalizeExpireSuccess(
   runtime: GlobalRuntime,
   memoryId: string,
   idempotencyKey: string,
@@ -33,19 +27,19 @@ function finalizeForgetSuccess(
   generation: number,
   expectedTextHash: string,
   expectedDocumentId: string,
-): ForgetResult {
+): ExpireResult {
   const finalized = runAtomicFinalization(runtime, () => {
     const existing = runtime.repos.operations.getByKey(idempotencyKey);
     if (existing?.state === "committed") {
       const row = runtime.repos.memories.getById(memoryId);
-      if (row && row.status === "deleted" && row.mutation_owner_key === null) {
+      if (row && row.status === "expired" && row.mutation_owner_key === null) {
         runtime.repos.candidates.purgeBodiesForMemory(memoryId);
         return true;
       }
-      throw new MutationTxRollbackError("committed delete does not match memory truth");
+      throw new MutationTxRollbackError("committed expire does not match memory truth");
     }
 
-    const ok = runtime.repos.memories.markDeletedCas({
+    const ok = runtime.repos.memories.markExpiredCas({
       id: memoryId,
       ownerKey: idempotencyKey,
       expectedGeneration: generation,
@@ -54,49 +48,70 @@ function finalizeForgetSuccess(
       progressToken,
     });
     if (!ok) {
-      throw new MutationTxRollbackError("delete memory CAS failed");
+      throw new MutationTxRollbackError("expire memory CAS failed");
     }
     if (!runtime.repos.operations.tryCommitFromProgress(idempotencyKey, progressToken)) {
-      throw new MutationTxRollbackError("delete operation commit CAS failed");
+      throw new MutationTxRollbackError("expire operation commit CAS failed");
     }
     runtime.repos.candidates.purgeBodiesForMemory(memoryId);
-    runtime.repos.audit.record({ eventType: "forget", memoryId, outcome: "deleted" });
+    runtime.repos.audit.record({ eventType: "expire", memoryId, outcome: "expired" });
     return true;
   });
   if (!finalized) {
     return {
       outcome: "unknown",
-      reason: "delete provider succeeded but local finalization lost ownership/generation",
+      reason: "expire provider succeeded but local finalization lost ownership/generation",
     };
   }
-  return { outcome: "forgotten" };
+  return { outcome: "expired" };
 }
 
-export async function forgetMemory(
+/**
+ * Governed formal-memory expiry: exact-document DELETE via the same durable
+ * ownership/generation/progress-token protocol as forget, ending in `expired`.
+ */
+export async function expireMemory(
   runtime: GlobalRuntime,
   memoryId: string,
-  options?: ForgetMemoryOptions,
-): Promise<ForgetResult> {
-  const signal = options?.signal;
-  if (signal?.aborted) return { outcome: "unknown", reason: "request was cancelled before delete" };
+  signal?: AbortSignal,
+): Promise<ExpireResult> {
+  if (signal?.aborted) return { outcome: "unknown", reason: "request was cancelled before expire" };
+  const nowIso = mutationNowIso();
+  const handoff = prepareExpiryHandoff(runtime, memoryId);
+  if (!handoff.ok) {
+    switch (handoff.reason) {
+      case "live_owner":
+        return {
+          outcome: "in_progress",
+          reason: "memory expiry is blocked by a live foreign mutation lease",
+        };
+      case "incoherent":
+        return { outcome: "rejected", reason: "memory expiry handoff is incoherent" };
+      case "not_found":
+        return { outcome: "rejected", reason: "unknown local memory id" };
+      case "not_due":
+      case "not_foreign":
+        break;
+    }
+  }
   const preRow = runtime.repos.memories.getOwnedActiveOrReconcilingById(memoryId);
   if (!preRow) return { outcome: "rejected", reason: "unknown local memory id" };
-  if (preRow.scope === "project") {
-    if (!options?.projectScopeEnabled) {
-      return {
-        outcome: "rejected",
-        reason: "project memory forget is unavailable for the current project",
-      };
-    }
-    if (preRow.project_identity !== (options.projectIdentity ?? null)) {
-      return { outcome: "rejected", reason: "memory belongs to a different project identity" };
+  const expectedExpireKey = expireIdempotencyKey(
+    memoryId,
+    preRow.mutation_generation,
+    preRow.text_hash,
+    preRow.document_id,
+  );
+  if (!preRow.expires_at || preRow.expires_at > nowIso) {
+    if (!(preRow.status === "reconciling" && preRow.mutation_owner_key === expectedExpireKey)) {
+      return { outcome: "rejected", reason: "memory is not due for expiry" };
     }
   }
   if (!isValidOwnedMemoryLocator(runtime, preRow)) {
     return { outcome: "rejected", reason: "stored memory locator is invalid" };
   }
 
-  const idempotencyKey = forgetIdempotencyKey(
+  const idempotencyKey = expireIdempotencyKey(
     memoryId,
     preRow.mutation_generation,
     preRow.text_hash,
@@ -114,7 +129,7 @@ export async function forgetMemory(
         existing.expected_text_hash !== preRow.text_hash ||
         (existing.memory_generation !== null && existing.memory_generation !== preRow.mutation_generation)
       ) {
-        return { kind: "rejected" as const, reason: "delete operation locator mismatch" };
+        return { kind: "rejected" as const, reason: "expire operation locator mismatch" };
       }
       const ownership = claimMemoryMutation(runtime, memoryId, idempotencyKey, {
         requireActiveForNewClaim: false,
@@ -144,7 +159,11 @@ export async function forgetMemory(
       row.mutation_generation !== preRow.mutation_generation
     ) {
       runtime.repos.memories.clearMutationOwner(memoryId, idempotencyKey);
-      return { kind: "rejected" as const, reason: "memory generation changed before delete claim" };
+      return { kind: "rejected" as const, reason: "memory generation changed before expire claim" };
+    }
+    if (!row.expires_at || row.expires_at > mutationNowIso()) {
+      runtime.repos.memories.clearMutationOwner(memoryId, idempotencyKey);
+      return { kind: "rejected" as const, reason: "memory is not due for expiry" };
     }
     const created = runtime.repos.operations.tryCreate({
       idempotencyKey,
@@ -161,7 +180,7 @@ export async function forgetMemory(
         return { kind: "operation" as const, op: existingByKey, generation: ownership.generation };
       }
       runtime.repos.memories.clearMutationOwner(memoryId, idempotencyKey);
-      return { kind: "rejected" as const, reason: "could not claim delete operation" };
+      return { kind: "rejected" as const, reason: "could not claim expire operation" };
     }
     return {
       kind: "operation" as const,
@@ -178,11 +197,11 @@ export async function forgetMemory(
   if (!begun.ok) {
     if (begun.code === "committed") {
       const row = runtime.repos.memories.getById(memoryId);
-      if (row?.status === "deleted") return { outcome: "forgotten" };
-      return { outcome: "rejected", reason: "committed delete does not match current memory state" };
+      if (row?.status === "expired") return { outcome: "expired" };
+      return { outcome: "rejected", reason: "committed expire does not match current memory state" };
     }
     if (begun.code === "in_progress") {
-      return { outcome: "unknown", reason: "delete already in progress" };
+      return { outcome: "unknown", reason: "expire already in progress" };
     }
     return { outcome: "unknown", reason: begun.reason };
   }
@@ -200,7 +219,7 @@ export async function forgetMemory(
       opState: "reconciling",
       memory: "keep_reconciling",
     });
-    return { outcome: "unknown", reason: "request was cancelled before provider delete" };
+    return { outcome: "unknown", reason: "request was cancelled before provider expire delete" };
   }
 
   const row = runtime.repos.memories.getById(memoryId);
@@ -219,10 +238,9 @@ export async function forgetMemory(
       opState: "failed",
       memory: "clear_owner",
     });
-    return { outcome: "rejected", reason: "memory generation changed before provider delete" };
+    return { outcome: "rejected", reason: "memory generation changed before provider expire delete" };
   }
 
-  // Reconciling / stale takeover: prove absence before any DELETE.
   if (wasReconciling) {
     const proof = await runtime.adapter.verifyDeletionPostconditions(
       row.bank_id,
@@ -230,7 +248,7 @@ export async function forgetMemory(
       mutationSignal,
     );
     if (proof.ok && proof.value.absent) {
-      return finalizeForgetSuccess(
+      return finalizeExpireSuccess(
         runtime,
         memoryId,
         idempotencyKey,
@@ -249,9 +267,8 @@ export async function forgetMemory(
         opState: "reconciling",
         memory: "keep_reconciling",
       });
-      return { outcome: "unknown", reason: `delete outcome is uncertain: ${proof.reason}` };
+      return { outcome: "unknown", reason: `expire outcome is uncertain: ${proof.reason}` };
     }
-    // Proven present: fall through to idempotent DELETE.
   }
 
   if (
@@ -259,7 +276,7 @@ export async function forgetMemory(
       runtime.repos.operations.markProviderMutationIssued(idempotencyKey, progressToken),
     )
   ) {
-    return { outcome: "unknown", reason: "delete ownership changed before provider delete" };
+    return { outcome: "unknown", reason: "expire ownership changed before provider delete" };
   }
 
   const deleted = await runtime.adapter.deleteMemoryDocument(row.bank_id, row.document_id, mutationSignal);
@@ -274,11 +291,11 @@ export async function forgetMemory(
       memory: keepReconciling ? "keep_reconciling" : "release_active",
     });
     return keepReconciling
-      ? { outcome: "unknown", reason: `delete outcome is uncertain: ${deleted.reason}` }
-      : { outcome: "rejected", reason: `delete failed: ${deleted.reason}` };
+      ? { outcome: "unknown", reason: `expire outcome is uncertain: ${deleted.reason}` }
+      : { outcome: "rejected", reason: `expire failed: ${deleted.reason}` };
   }
 
-  return finalizeForgetSuccess(
+  return finalizeExpireSuccess(
     runtime,
     memoryId,
     idempotencyKey,

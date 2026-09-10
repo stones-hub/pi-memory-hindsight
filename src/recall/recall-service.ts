@@ -37,6 +37,8 @@ interface ReconciledItem {
   memoryType: MemoryType;
   text: string;
   verificationState: VerificationState;
+  memoryId: string | null;
+  readOnlyShared: boolean;
 }
 
 const RECALL_MAX_TOKENS_PER_BANK = 2000;
@@ -163,7 +165,7 @@ function localRowAcceptsProviderItem(
   if (!rowOwnsDocumentId(row)) return false;
   if (row.memory_type !== metadata.memory_type) return false;
   if (row.verification_state !== metadata.verification_state) return false;
-  if (row.expires_at && Date.parse(row.expires_at) <= Date.now()) return false;
+  if (row.expires_at && Date.parse(row.expires_at) <= nowMs) return false;
 
   const currentMeta = validateRetainMetadata(metadata);
   if (currentMeta.ok) {
@@ -236,6 +238,8 @@ function reconcile(
         memoryType: row.memory_type,
         text: item.text.trim(),
         verificationState: row.verification_state,
+        memoryId: row.id,
+        readOnlyShared: false,
       });
       continue;
     }
@@ -251,6 +255,8 @@ function reconcile(
         memoryType: row.memory_type,
         text: item.text.trim(),
         verificationState: row.verification_state,
+        memoryId: row.id,
+        readOnlyShared: false,
       });
       continue;
     }
@@ -262,6 +268,8 @@ function reconcile(
       memoryType: metadata.memory_type as MemoryType,
       text: item.text.trim(),
       verificationState: metadata.verification_state as VerificationState,
+      memoryId: null,
+      readOnlyShared: true,
     });
   }
   return out;
@@ -379,6 +387,8 @@ export async function handleBeforeAgentStart(
       scope: item.scope,
       memoryType: item.memoryType,
       text: truncateUnicode(item.text, DIAGNOSTIC_TEXT_PREVIEW_CHARS),
+      memoryId: item.memoryId,
+      readOnlyShared: item.readOnlyShared,
     })),
   };
 

@@ -2,12 +2,11 @@
 
 ## Current task and plan
 
-- Milestone: initial implementation.
-- Design status: phase-0 baseline approved by the user.
-- Coding authorization: granted for narrow fix `.pi/tasks/conflict-update-supersession-fix.md` (sole coding executor), including the approved product decision for explicit `/memory update` and tool create/update shapes.
-- Implementation status: release candidate complete and independently accepted. The conflict/update/supersession governance includes explicit target-only updates, replace verify-before-retry, candidate target-hash snapshots (DB v3), update idempotency keys binding expected+new hashes, DB v4 legacy document-key freeze, DB v5 per-memory mutation generation/ownership, and DB v6 provider-issued/progress-token crash recovery. Create/replace/delete/duplicate-reverify share durable ownership, generation, lease takeover, verify-first reconciliation, and atomic operation+memory finalization. Repeated create→forget→recreate chains, candidate-finalization races, stale delayed completions, post-delete ambiguity, and direct verification ambiguity are covered by deterministic regressions.
-- Baseline: repository has no commits yet.
-- Compatibility: upgraded SQLite may still reference Hindsight documents created under the pre-fix text-hash document formula with legacy metadata (`logical_id=text_hash`, no `content_hash`). Recall/forget accept only that legacy format or the current row-id formula when locally proven; shared Project recall without a local row rejects legacy. Governed updates reuse the stored legacy document id and write current metadata.
+- Milestone: memory retention and discovery follow-up implemented.
+- Design status: follow-up policy approved; coding authorization granted for Cursor Agent.
+- Implementation status: retention/discovery follow-up is **accepted on the current uncommitted tree**. After a real-profile smoke exposed that Hindsight 0.8.3 stores governance metadata in document GET `document_metadata` while list units return `metadata: null`, Cursor chat `93f0fce7-e569-4b4c-ac14-934a2ef1a61e` implemented dual exact-read validation and removed the unused `/memory extract` command surface (settled automatic extraction unchanged). **Publication-readiness (GitHub direct install, option A)** is implemented on the same tree: `pi.extensions` loads `./src/index.ts`, root `LICENSE` matches remote Apache-2.0 (`c71d239d…`), `package.json` `license` is `Apache-2.0`, npm pack includes `LICENSE` (**64 files**), Pi core imports are `peerDependencies` with `"*"` ranges (exact versions remain in `devDependencies`), deny-only root `allowScripts` `{ "pi-memory-hindsight": false }` declares this package's own install scripts are not needed, README documents `pi install https://github.com/stones-hub/pi-memory-hindsight.git`, loopback `git daemon` + real `pi install` git-source acceptance exists, and packaged Pi acceptance waits for `id=` at remember time. **Publication acceptance is signed off on the current uncommitted tree** after Pi independently reran the release-critical checks and an independent focused rereview returned `VERDICT: PASS`. **No commit/push authorization**; local tree still not pushed to remote.
+- Baseline commit: `4fce7f1ef466cece83de34579b51df6f34c2e1c1` plus intentional README rewrite and task file.
+- Compatibility: upgraded SQLite may still reference Hindsight documents created under the pre-fix text-hash document formula with legacy metadata (`logical_id=text_hash`, no `content_hash`). Recall/forget accept only that legacy format or the current row-id formula when locally proven; shared Project recall without a local row rejects legacy. Governed updates reuse the stored legacy document id and write current metadata. Formal expiry and list/show use the same locator rules.
 
 ## Completed
 
@@ -35,8 +34,15 @@
 
 ## Verification status
 
-- Formal implementation: Slices 1–4 (`.pi/tasks/slice-1-core-foundation.md`, `.pi/tasks/slice-2-hindsight-provider.md`, `.pi/tasks/slice-3-pi-lifecycle.md`, `.pi/tasks/slice-4-governance-commands-ui.md`) completed by Cursor Agent and independently reviewed/fixed.
-- Automated tests: latest independent run passes `npm test` (14 files, 193 tests), `npm run typecheck`, `npm run build`, `npm pack --dry-run` (200 files), `npm audit --omit=dev` (0 vulnerabilities), `git diff --check`, and byte-level NUL scanning of `src/` and `tests/`.
+- Formal implementation: Slices 1–4, conflict/update/supersession, retention/discovery, real `document_metadata` compatibility, and manual-extract command cleanup are accepted on the current uncommitted tree.
+- **Pi independent offline (accepted on current tree):** `npm test` **16 files / 272 tests**; `npm run typecheck`; `npm run build`; `npm audit --omit=dev` **0 vulnerabilities**; `git diff --check`; byte NUL scan **clean**.
+- **Pack dry-run (accepted on current tree):** **64 files** including root `LICENSE`, 54 TypeScript source files, `src/index.ts`, and no `dist/`; evidence `/tmp/pi-memory-hindsight-publication-pack-final.json`, SHA-256 `55fcccf77ef9ac7b3e0fd6ad965dfdc6ae1fde3ee1dc71baca42634b47d78c81`.
+- **Packaged Pi acceptance (accepted on current tree):** evidence `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `e0965b1cc3251a00b9485d5bfbc8a2063ed88a7589220d8ff7eddc4f1bfb9bdc`; all **19** required booleans true; `pending=[]`.
+- **Loopback git-install acceptance (accepted on current tree):** evidence `/tmp/pi-memory-hindsight-git-install-acceptance.json`, SHA-256 `00605090a6d2e1b67c69b4c763713dff13f75c053a9339620b0053b261373fe6`; `packageLicenseField` `Apache-2.0`, `licenseFileSha256` `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`, `stagedLicenseMatchesRemote`, `packedLicenseIncluded`, `lowerPriorityUserNpmrcAllowScriptsPresent`, `packageDenyOnlyAllowScripts`, `npmInstallCompleted`, `piInstallCompleted`, `memoryCommandLoaded`. Harness injects lower-priority isolated `~/.npmrc` `allow-scripts=...` and neutralizes host global npmrc/CLI env so normal project-scoped install with package deny-only `allowScripts` is what is proven; does **not** model npm CLI/env allow-scripts rejection.
+- **Packed README command-surface probe:** evidence `/tmp/pi-memory-hindsight-readme-surface.json`, SHA-256 `2f8f56dc6b84e6a40892b611987ed318b7ccb9184e4e19fca240820453ef95f0`; help has no manual extract, unknown extract returns help, language/status/last pass, and SQLite remains 0 Candidate/0 Memory in the isolated profile.
+- **Disposable live Hindsight 0.8.3 acceptance (current):** evidence `/tmp/pi-memory-hindsight-acceptance-hindsight-live.json`, SHA-256 `03c31ce350bf3674b6bb6bdc3edd27d8a3d6c9839a6b84989cc90c10e5b5355e`; retain/recall/same-document replace/delete/known absence/cleanup pass; disposable Bank `pi-memory-hindsight:project:930308c9f0ac24961449050cee208174`, nonce `readme-full-20260910033000-1a36ba8d1357b5ed`, `cleanupOperationallyComplete=true`; never list Banks.
+- **Independent README contract review:** **PASS**, no blockers; Claude Code session `e981bd95-f051-4b19-9070-4aeea2e642c5`; evidence `/tmp/pi-memory-hindsight-readme-contract-review-claude.json`.
+- Retention/discovery follow-up proves: additive v7 migration from populated v1–v6; exact list/show with content-unavailable degradation; remember/approve/candidates/last IDs; atomic candidate body purge; formal expiry via owner/generation/progress-token protocol ending in `expired`; update/forget coordination; ambiguous expiry restart takeover; multi-window maintenance lease; bounded retention across candidates/operations/conflicts/audit/usage/tombstones; project-forget cwd gate; locator fail-closed gates; foreign-op retirement on expiry handoff; no Bank enumeration.
 - Slice 1 safety probes: no NUL bytes in `src/` or `tests/`; DB scope/type/project constraints, guarded candidate transitions, language constraints, bounded audit/usage fields, bulk evidence rejection, conservative CJK budgeting, strict JSON parsing, config/identity rules are covered.
 - Slice 2 provider probes use only an in-process `127.0.0.1` mock server and cover owned namespace rejection before I/O, exact Hindsight 0.8.3 capability gating, fixed Bank config readback, strict metadata, item-level `update_mode=replace`, exact one-unit reconciliation, recall/reflect bounds, mutation ambiguity, and verified Document deletion. No live Hindsight call was made.
 - Slice 2 final manifest: `/tmp/pi-memory-hindsight-slice2-final.sha256` (manifest SHA-256 `e34842c25cc33e974e1173dbf6fda94f9720ac66f29b56871bd044edcabe24a6`).
@@ -44,33 +50,31 @@
 - Slice 3 final manifest: `/tmp/pi-memory-hindsight-slice3-final.sha256` (manifest SHA-256 `d15daa21cacbd53a54bf4c37ba5f73ee9d9e767122ffeb3406e345c3ed0a70cf`).
 - Slice 4 proves one command/one strict tool registration, local/provider runtime separation, session on/off, localized status/language/last/help, shared governed writes, stable retry metadata, operation ownership, candidate CAS/reviewer actions, physical forget locator proof, manual-only Reflect confirmation, populated v1→v2 migration, cancellation, and offline local governance.
 - Slice 4 final manifest: `/tmp/pi-memory-hindsight-slice4-final2.sha256` (manifest SHA-256 `903b32c29665294143101b0965388744fe04f3fb4611a307f74c298bf9df8cb5`).
-- Local extension acceptance: packaged offline harness implemented and independently rerun successfully; latest evidence is `/tmp/pi-memory-hindsight-acceptance-pi.json`, with all 14 required booleans `true` and `pending` empty. The run left no Pi/PT​​Y subprocess or isolated temp directory behind.
 - Hindsight mutation tests: the disposable live runner implements owned-bank retain/recall/exact-item-check/same-document replace/re-verify, followed by whole-bank DELETE and known-document absence proof. It validates the real Hindsight 0.8.3 `DeleteResponse` fields (`success`, optional `message`, optional `deleted_count`) and honestly reports that no public endpoint proves total Bank nonexistence. Mock tests cover success, individual/combined failures, malformed legacy delete responses, non-owned-bank rejection, and exact same-document replacement.
-- Latest packaged Pi acceptance passed with every required boolean true and `pending=[]`; evidence `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `0ea2e7c5a4dd627d74881a5c8b7b3c33597d1032f3d4599180cb856937d92acd`.
-- Latest real Hindsight 0.8.3 acceptance used one fresh nonce-derived disposable Bank only. Retain, recall, same-document replacement, Bank deletion, known-document absence, and cleanup passed; evidence `/tmp/pi-memory-hindsight-acceptance-hindsight-live.json`, SHA-256 `468baf1b61cded359c1d161d81cb821ba6609d6998b8f301c7a41d6ba4103070`. No Bank enumeration, Reflect, or existing-Bank access occurred.
-- Existing non-dedicated Hindsight banks were not listed, read, updated, or deleted.
-- Pi configuration: not modified.
+- **Historical (pre-retention follow-up):** prior packaged Pi acceptance SHA-256 `0ea2e7c5a4dd627d74881a5c8b7b3c33597d1032f3d4599180cb856937d92acd`; prior live Hindsight acceptance SHA-256 `468baf1b61cded359c1d161d81cb821ba6609d6998b8f301c7a41d6ba4103070`; prior final review chat `62022856-6ded-4158-b98f-6dd1a2723f11`. Do not treat these as current.
+- Existing non-dedicated Hindsight banks were not listed, read, updated, or deleted during final live acceptance.
+- **Pi installation nuance:** Pi settings/config were not modified in this follow-up, and no real Pi TUI acceptance was run against the user's live profile. The user's existing Pi package registration points at this local repository; repeated builds refreshed ignored `dist/`, so a future Pi process may load the candidate code.
 
 ## Git status
 
-- Local candidate: release-candidate verification and disposable live acceptance pass.
-- Independent final read-only review: PASS; Cursor chat `62022856-6ded-4158-b98f-6dd1a2723f11`, evidence `/tmp/pi-memory-hindsight-verdict-only-cursor.json`.
-- Commit: authorized by the user; initial local commit is the next action.
-- Push: not authorized / not performed.
+- Baseline HEAD: `4fce7f1ef466cece83de34579b51df6f34c2e1c1` (unchanged).
+- Working tree: **uncommitted** follow-up implementation on top of baseline.
+- Commit authorization for this follow-up: **not granted**.
+- Push/publish/deploy: **not authorized / not performed**.
+- GitHub publication: manifest/README ready for option A (`pi install` git URL); local tree is **not** on remote yet; local `LICENSE` now matches remote Apache-2.0 text.
 
-## Residual risks to verify during implementation
+## Non-blocking residuals (final review)
 
-- Contract behavior must be exercised against a disposable Hindsight 0.8.3 instance, including exact one-unit retain, replacement, timeout reconciliation, and post-delete proof.
-- Pi E2E must prove turn-specific system prompt injection does not persist recall content in Session files.
-- Current-model JSON reliability and cancellation must be tested across supported providers; invalid output must produce zero candidates.
-- `node:sqlite` is valid for Node-run Pi; standalone Pi binary compatibility remains unsupported until probed.
-- A Hindsight operator can configure remote embeddings/reranking. The Extension can avoid generative retain, but cannot guarantee all backend processing remains local without deployment inspection.
+- Maintenance must run to physically delete expired documents; expiry alone does not guarantee immediate provider absence.
+- No automatic `VACUUM` or promised SQLite file shrink.
+- Post-migration cleanup failure path lacks a dedicated test.
+- Standalone Pi `node:sqlite` compatibility and remote embedding locality remain environment/operator concerns.
 
 ## Next step
 
-1. Create the user-authorized local initial commit after reviewing the exact staged file set and confirming ignored build/dependency/runtime artifacts remain excluded.
-2. Do not push, publish, deploy, or install into the user's live Pi configuration without separate authorization.
-3. If code changes after the commit, rerun offline verification, packaged Pi acceptance, disposable live acceptance, and independent review before calling the new state a release candidate.
+1. Separate user authorization is required before commit, push, publish, or deploy.
+2. If committing, preserve evidence file paths and SHA-256 hashes recorded in this handover and `.pi/tasks/memory-retention-and-discovery-followup.md`.
+3. Do not treat executor self-report or historical evidence hashes as substitutes for the final Pi evidence above.
 
 ## Executor session
 
@@ -89,4 +93,5 @@
 - Cursor Slice 4 evidence: `/tmp/pi-memory-hindsight-slice4-cursor.json`, `/tmp/pi-memory-hindsight-slice4-cursor-fix.json`, `/tmp/pi-memory-hindsight-slice4-cursor-fix2.json`, and `/tmp/pi-memory-hindsight-slice4-cursor-fix3.json`.
 - Slice 5 Claude Code coding/fix session: `20d3b4d5-4619-4c81-b1b3-738ae8520655`, canonical model `claude-sonnet-5`. Final narrow-fix evidence: `/tmp/pi-memory-hindsight-slice5-claude-live-validator-fix.json`.
 - Latest offline source manifest: `/tmp/pi-memory-hindsight-slice5-offline-final.sha256`; manifest SHA-256 `1fc42918631e5672e3394683a3d9fa0f6d51723412f448da11e045266c23f272`.
-- No executor process remains. Slices 1–4 are accepted at slice level; Slice 5 is offline-verified but blocked on successful real disposable-Hindsight acceptance and independent final review.
+- Retention/discovery follow-up coding: Cursor Agent chat `93f0fce7-e569-4b4c-ac14-934a2ef1a61e`; requested model `composer-2.5`; actual model unproven.
+- No executor process remains. Slices 1–4 are accepted at slice level; Slice 5 and retention/discovery follow-up are **accepted** by Pi final verification (2026-09-09).

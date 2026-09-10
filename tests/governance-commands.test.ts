@@ -6,14 +6,17 @@ import { ProfileRepository } from "../src/db/profile-repository.js";
 import { MemoriesRepository } from "../src/db/memories-repository.js";
 import { CandidatesRepository } from "../src/db/candidates-repository.js";
 import { OperationsRepository } from "../src/db/operations-repository.js";
+import { MaintenanceRepository } from "../src/db/maintenance-repository.js";
 import { AuditRepository, ConflictsRepository, UsageRepository } from "../src/db/audit-conflicts-usage-repository.js";
 import { profileBankId, projectBankId } from "../src/identity/bank-id.js";
 import { approveCandidate } from "../src/governance/candidate-service.js";
 import { forgetIdempotencyKey } from "../src/governance/mutation-ownership.js";
 import { forgetMemory } from "../src/governance/forget-service.js";
+import { projectForgetCtx } from "./forget-test-context.js";
 import { reflectMemory } from "../src/governance/reflect-service.js";
 import { remember } from "../src/governance/remember-service.js";
 import { parseMemoryCommand } from "../src/commands/memory-command-parser.js";
+import { t } from "../src/i18n/messages.js";
 import { createCandidateReviewer } from "../src/ui/candidate-reviewer.js";
 import { getSessionState, noteTurnStart, resetAllSessionStateForTests, setSessionMemoryOff } from "../src/runtime/session-runtime.js";
 import { buildOwnedDocumentId } from "../src/provider/validation.js";
@@ -53,6 +56,10 @@ function makeRuntime() {
         value: { deleted: true, alreadyAbsent: false, memoryUnitsDeleted: 1 },
       }),
       verifyDeletionPostconditions: vi.fn().mockResolvedValue({ ok: true, value: { absent: true } }),
+      fetchExactOneUnitDocument: vi.fn().mockResolvedValue({
+        ok: true,
+        value: { text: "Prefer concise answers.", unitId: "unit-1", metadata: null },
+      }),
       reflect: vi.fn().mockResolvedValue({ ok: true, value: { text: "Reflect result" } }),
     },
     repos: {
@@ -63,6 +70,7 @@ function makeRuntime() {
       conflicts: new ConflictsRepository(db),
       audit: new AuditRepository(db),
       usage: new UsageRepository(db),
+      maintenance: new MaintenanceRepository(db),
     },
   };
 }
@@ -147,6 +155,27 @@ describe("slice 4 governance commands and tools", () => {
     });
     expect(parseMemoryCommand("update")).toBeNull();
     expect(parseMemoryCommand("update only-id")).toBeNull();
+    expect(parseMemoryCommand("extract")).toBeNull();
+    expect(parseMemoryCommand("extract extra")).toBeNull();
+    expect(t("en", "memory.help")).not.toContain("extract");
+    expect(t("zh", "memory.help")).not.toContain("extract");
+  });
+
+  it("treats bare extract as an unknown command and shows help", async () => {
+    const runtime = makeRuntime();
+    getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    const { commands } = captureExtension();
+    const command = commands.get("memory");
+    const ctx = makeContext();
+    const notify = vi.fn();
+    ctx.ui.notify = notify;
+    await command!.handler("extract", ctx);
+    await command!.handler("extract extra", ctx);
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(notify.mock.calls[0]?.[0]).toBe(t("en", "memory.help"));
+    expect(notify.mock.calls[0]?.[1]).toBe("error");
+    expect(notify.mock.calls[1]?.[0]).toBe(t("en", "memory.help"));
+    expect(notify.mock.calls[1]?.[1]).toBe("error");
   });
 
   it("routes /memory update and tool update through the shared replace path", async () => {
@@ -706,6 +735,186 @@ describe("slice 4 governance commands and tools", () => {
     expect(runtime.repos.memories.getById(valid.id)?.status).toBe("active");
   });
 
+  it("forgets project memory only when cwd project identity matches", async () => {
+    const runtime = makeRuntime();
+    const hash = "a".repeat(64);
+    const memory = runtime.repos.memories.create({
+      id: "proj-forget-ok",
+      scope: "project",
+      memoryType: "decision",
+      projectIdentity: "repo",
+      bankId: projectBankId("repo"),
+      documentId: buildOwnedDocumentId("project", "repo", "decision", "proj-forget-ok"),
+      unitId: "unit-proj",
+      textHash: hash,
+      textLength: 5,
+      verificationState: "verified",
+      sourceSessionId: null,
+      sourceRef: null,
+      supersedesMemoryId: null,
+      expiresAt: null,
+    });
+    const ok = await forgetMemory(runtime as any, memory.id, projectForgetCtx("repo"));
+    expect(ok.outcome).toBe("forgotten");
+    expect(runtime.repos.memories.getById(memory.id)?.status).toBe("deleted");
+  });
+
+  it("rejects cross-project forget before provider delete", async () => {
+    const runtime = makeRuntime();
+    const hash = "b".repeat(64);
+    const memory = runtime.repos.memories.create({
+      id: "proj-forget-cross",
+      scope: "project",
+      memoryType: "decision",
+      projectIdentity: "repo-a",
+      bankId: projectBankId("repo-a"),
+      documentId: buildOwnedDocumentId("project", "repo-a", "decision", "proj-forget-cross"),
+      unitId: "unit-cross",
+      textHash: hash,
+      textLength: 5,
+      verificationState: "verified",
+      sourceSessionId: null,
+      sourceRef: null,
+      supersedesMemoryId: null,
+      expiresAt: null,
+    });
+    const before = JSON.stringify(runtime.repos.memories.getById(memory.id));
+    const result = await forgetMemory(runtime as any, memory.id, projectForgetCtx("repo-b"));
+    expect(result).toEqual({
+      outcome: "rejected",
+      reason: "memory belongs to a different project identity",
+    });
+    expect(JSON.stringify(runtime.repos.memories.getById(memory.id))).toBe(before);
+    expect(runtime.repos.operations.listByMemoryId(memory.id)).toHaveLength(0);
+    expect(runtime.adapter.deleteMemoryDocument).not.toHaveBeenCalled();
+  });
+
+  it("rejects project forget when cwd project scope is disabled", async () => {
+    const runtime = makeRuntime();
+    const hash = "c".repeat(64);
+    const memory = runtime.repos.memories.create({
+      id: "proj-forget-disabled",
+      scope: "project",
+      memoryType: "decision",
+      projectIdentity: "repo",
+      bankId: projectBankId("repo"),
+      documentId: buildOwnedDocumentId("project", "repo", "decision", "proj-forget-disabled"),
+      unitId: "unit-disabled",
+      textHash: hash,
+      textLength: 5,
+      verificationState: "verified",
+      sourceSessionId: null,
+      sourceRef: null,
+      supersedesMemoryId: null,
+      expiresAt: null,
+    });
+    const result = await forgetMemory(runtime as any, memory.id, {
+      projectIdentity: "repo",
+      projectScopeEnabled: false,
+    });
+    expect(result).toEqual({
+      outcome: "rejected",
+      reason: "project memory forget is unavailable for the current project",
+    });
+    expect(runtime.adapter.deleteMemoryDocument).not.toHaveBeenCalled();
+  });
+
+  it("rejects project forget when trusted context is omitted", async () => {
+    const runtime = makeRuntime();
+    const hash = "d".repeat(64);
+    const memory = runtime.repos.memories.create({
+      id: "proj-forget-omitted",
+      scope: "project",
+      memoryType: "decision",
+      projectIdentity: "repo",
+      bankId: projectBankId("repo"),
+      documentId: buildOwnedDocumentId("project", "repo", "decision", "proj-forget-omitted"),
+      unitId: "unit-omitted",
+      textHash: hash,
+      textLength: 5,
+      verificationState: "verified",
+      sourceSessionId: null,
+      sourceRef: null,
+      supersedesMemoryId: null,
+      expiresAt: null,
+    });
+    const result = await forgetMemory(runtime as any, memory.id);
+    expect(result.outcome).toBe("rejected");
+    expect(runtime.adapter.deleteMemoryDocument).not.toHaveBeenCalled();
+  });
+
+  it("forget command resolves cwd project before delete", async () => {
+    const runtime = makeRuntime();
+    const hash = "e".repeat(64);
+    const memory = runtime.repos.memories.create({
+      id: "proj-forget-cmd",
+      scope: "project",
+      memoryType: "decision",
+      projectIdentity: "repo",
+      bankId: projectBankId("repo"),
+      documentId: buildOwnedDocumentId("project", "repo", "decision", "proj-forget-cmd"),
+      unitId: "unit-cmd",
+      textHash: hash,
+      textLength: 5,
+      verificationState: "verified",
+      sourceSessionId: null,
+      sourceRef: null,
+      supersedesMemoryId: null,
+      expiresAt: null,
+    });
+    getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({
+      enabled: true,
+      identity: "repo",
+      bankId: projectBankId("repo"),
+      reason: "ok",
+    });
+    const { commands } = captureExtension();
+    const command = commands.get("memory");
+    const ctx = makeContext();
+    await command.handler(`forget ${memory.id}`, ctx);
+    expect(runtime.repos.memories.getById(memory.id)?.status).toBe("deleted");
+    expect(resolveProjectBankMock).toHaveBeenCalledWith(ctx.cwd);
+    expect(runtime.adapter.deleteMemoryDocument).toHaveBeenCalled();
+  });
+
+  it("forget command rejects cross-project memory without provider delete", async () => {
+    const runtime = makeRuntime();
+    const hash = "f".repeat(64);
+    const memory = runtime.repos.memories.create({
+      id: "proj-forget-cmd-cross",
+      scope: "project",
+      memoryType: "decision",
+      projectIdentity: "repo-a",
+      bankId: projectBankId("repo-a"),
+      documentId: buildOwnedDocumentId("project", "repo-a", "decision", "proj-forget-cmd-cross"),
+      unitId: "unit-cmd-cross",
+      textHash: hash,
+      textLength: 5,
+      verificationState: "verified",
+      sourceSessionId: null,
+      sourceRef: null,
+      supersedesMemoryId: null,
+      expiresAt: null,
+    });
+    getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({
+      enabled: true,
+      identity: "repo-b",
+      bankId: projectBankId("repo-b"),
+      reason: "ok",
+    });
+    const { commands } = captureExtension();
+    const command = commands.get("memory");
+    const ctx = makeContext();
+    await command.handler(`forget ${memory.id}`, ctx);
+    expect(runtime.repos.memories.getById(memory.id)?.status).toBe("active");
+    expect(runtime.adapter.deleteMemoryDocument).not.toHaveBeenCalled();
+    expect((ctx.ui.notify as any).mock.calls.at(-1)?.[1]).toBe("error");
+  });
+
   it("rejects corrupted but namespace-valid owned locators before forget provider I/O", async () => {
     const runtime = makeRuntime();
     const projectIdentity = "repo";
@@ -899,7 +1108,7 @@ describe("slice 4 governance commands and tools", () => {
       supersedesMemoryId: null,
       expiresAt: null,
     });
-    const forgetResult = await forgetMemory(runtime as any, memory.id, controller.signal);
+    const forgetResult = await forgetMemory(runtime as any, memory.id, { signal: controller.signal });
     expect(forgetResult.outcome).toBe("unknown");
     expect(runtime.adapter.deleteMemoryDocument).not.toHaveBeenCalled();
     expect(runtime.repos.memories.getById(memory.id)?.status).toBe("active");

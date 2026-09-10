@@ -2,8 +2,7 @@ import type { GlobalRuntime } from "../runtime/global-runtime.js";
 import type { CandidateRow } from "../db/types.js";
 import { normalizeLanguage, t, type Language } from "../i18n/messages.js";
 import { validateMemoryText } from "../security/filters.js";
-import { createHash } from "node:crypto";
-import { remember, type RememberResult, getRememberAuditCode } from "./remember-service.js";
+import { remember, type RememberResult, getRememberAuditCode, textHashOf } from "./remember-service.js";
 import { replaceMemory, type ReplaceResult, getReplaceAuditCode } from "./replace-service.js";
 
 export interface CandidateApproveRequest {
@@ -117,7 +116,10 @@ export async function approveCandidate(
     return { outcome: "rejected", reason: shapeCheck.reason };
   }
 
-  const text = (request.editedText ?? row.text).trim();
+  const text = (request.editedText ?? row.text ?? "").trim();
+  if (!row.text && request.editedText === undefined) {
+    return { outcome: "rejected", reason: "candidate body is unavailable" };
+  }
   const textValidation = validateMemoryText(text);
   if (!textValidation.ok) {
     return { outcome: "rejected", reason: textValidation.reason ?? "invalid candidate text" };
@@ -211,7 +213,7 @@ export async function approveCandidate(
     if (beforeCandidateApprovalFinalizeForTests) {
       await beforeCandidateApprovalFinalizeForTests(runtime, mapped.memoryId);
     }
-    const textHash = createHash("sha256").update(text).digest("hex");
+    const textHash = textHashOf(text);
     let approvedOk = false;
     runtime.db.transaction(() => {
       approvedOk = runtime.repos.candidates.tryMarkApproved(row.id, mapped.memoryId, {
@@ -269,18 +271,31 @@ export async function approveCandidate(
   return mapped;
 }
 
-export function rejectCandidate(runtime: GlobalRuntime, candidateId: string): boolean {
+export type RejectCandidateResult =
+  | { ok: true }
+  | { ok: false; reason: "not_found" | "not_rejectable" | "already_decided" };
+
+export function rejectCandidate(runtime: GlobalRuntime, candidateId: string): RejectCandidateResult {
   runtime.repos.candidates.sweepExpired();
-  const ok = runtime.repos.candidates.tryMarkRejected(candidateId);
-  if (ok) {
-    runtime.db.transaction(() => {
-      for (const conflict of runtime.repos.conflicts.listOpenForCandidate(candidateId)) {
-        runtime.repos.conflicts.resolve(conflict.id, "resolved_keep_existing");
-      }
-      runtime.repos.audit.record({ eventType: "candidate", candidateId, outcome: "rejected" });
-    });
+  const row = runtime.repos.candidates.getById(candidateId);
+  if (!row) return { ok: false, reason: "not_found" };
+  if (row.state === "approved" || row.state === "rejected" || row.state === "expired") {
+    return { ok: false, reason: "already_decided" };
   }
-  return ok;
+  if (row.state !== "pending" && row.state !== "failed") {
+    return { ok: false, reason: "not_rejectable" };
+  }
+  const ok = runtime.repos.candidates.tryMarkRejected(candidateId);
+  if (!ok) {
+    return { ok: false, reason: "already_decided" };
+  }
+  runtime.db.transaction(() => {
+    for (const conflict of runtime.repos.conflicts.listOpenForCandidate(candidateId)) {
+      runtime.repos.conflicts.resolve(conflict.id, "resolved_keep_existing");
+    }
+    runtime.repos.audit.record({ eventType: "candidate", candidateId, outcome: "rejected" });
+  });
+  return { ok: true };
 }
 
 export function candidateHasOpenConflict(runtime: GlobalRuntime, candidateId: string): boolean {
@@ -288,10 +303,12 @@ export function candidateHasOpenConflict(runtime: GlobalRuntime, candidateId: st
 }
 
 export function renderCandidateSummary(language: Language, row: CandidateRow, hasOpenConflict = false): string {
+  const text = row.text ?? t(language, "candidates.body_purged");
   return t(language, hasOpenConflict ? "candidates.item.conflict" : "candidates.item", {
+    id: row.id,
     scope: row.scope,
     type: row.memory_type,
-    text: row.text,
+    text,
   });
 }
 

@@ -61,17 +61,18 @@ The adapter never lists all Hindsight banks to infer ownership. It computes and 
 
 The database is under `getAgentDir()/memory/pi-memory-hindsight.db`. `getAgentDir()` is Pi's public resolver and honors `PI_CODING_AGENT_DIR`.
 
-Conceptual tables:
+Tables:
 
 - `profile`: schema version, anonymous profile ID, language;
-- `candidates`: bounded redacted candidate text, type, scope, evidence summary, state, expiry;
-- `memories`: Extension logical ID, scope, type, Hindsight bank/document/unit locators, lifecycle and verification metadata; memory body is not duplicated after successful write. Hindsight metadata carries the bounded fields needed by other profiles sharing a Project Bank;
-- `operations`: idempotency key, expected content hash, action, attempt and reconciliation state;
+- `memories`: formal-memory governance rows (`active|reconciling|deleted|expired|superseded`), locators, hashes, mutation ownership; memory body is not duplicated after successful write. Hindsight metadata carries the bounded fields needed by other profiles sharing a Project Bank;
+- `candidates`: reviewable bodies while pending/approving/failed/reconciling; terminal states purge bodies atomically (`text_hash`, `body_purged_at`);
+- `operations`: idempotency key, expected content hash, action, attempt and reconciliation state, progress tokens, provider-issued flags;
 - `conflicts`: candidate/logical-memory relationships and resolution state;
 - `audit_events`: event type, IDs, timestamps, outcome and redacted codes, never memory bodies;
-- `usage_events`: independent extraction token/cost accounting without prompt/response bodies.
+- `usage_events`: independent extraction token/cost accounting without prompt/response bodies;
+- `maintenance_state`: durable cross-window cleanup lease and last-success metadata.
 
-Use migrations, foreign keys, WAL where supported, busy timeout, explicit transactions, unique idempotency constraints, and compare-and-set approval transitions. Keep synchronous SQLite transactions short; never hold one over network or model calls.
+Use migrations, foreign keys, WAL where supported, busy timeout, explicit transactions, unique idempotency constraints, and compare-and-set approval transitions. Keep synchronous SQLite transactions short; never hold one over network or model calls. DB v7 adds `expired` memory status, candidate body-purge columns, and maintenance coordination while preserving v1–v6 data.
 
 ## Pi lifecycle integration
 
@@ -185,6 +186,19 @@ A deterministic document ID binds one Extension logical memory to one Hindsight 
 ```
 
 Hindsight 0.8.3 has no public single-unit DELETE. One-memory-per-document makes public document deletion the supported physical-delete primitive. Never claim success from a soft invalidation or an uncertain HTTP outcome.
+
+## Discovery path (`/memory list` / `/memory show`)
+
+```text
+SQLite owned locator (bank_id + document_id + text_hash)
+  → parallel exact document GET + list-by-document (limit 2, offset 0)
+  → validate document_metadata, original_text/content_hash, memory_unit_count === 1
+  → cross-check single live unit text/hash (unit metadata may be null on real 0.8.3)
+  → providerMetadataMatchesLocalRow against SQLite
+  → bounded preview or full text, or content-unavailable on any failure
+```
+
+Never enumerate banks or fuzzy-recall for discovery. Provider document timestamps are not governance timestamps.
 
 ## Failure model
 

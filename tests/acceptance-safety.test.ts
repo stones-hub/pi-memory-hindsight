@@ -228,7 +228,7 @@ describe("live hindsight acceptance runner (mock)", () => {
     );
     const listed = (await listResponse.json()) as {
       total: number;
-      items: Array<{ text: string; document_id: string; metadata: Record<string, string> }>;
+      items: Array<{ text: string; document_id: string; metadata: Record<string, string> | null }>;
     };
 
     expect(listed.total).toBe(1);
@@ -237,10 +237,22 @@ describe("live hindsight acceptance runner (mock)", () => {
     expect(unit?.document_id).toBe(documentId);
     expect(unit?.text).toBe(updatedText);
     expect(unit?.text).not.toBe(initialText);
-    expect(unit?.metadata.logical_id).toBe(updatedLogicalId);
-    expect(unit?.metadata.logical_id).not.toBe(initialLogicalId);
-    expect(unit?.metadata.created_at).toBe(createdAt);
-    expect(unit?.metadata.updated_at).toBe(updatedAt);
-    expect(unit?.metadata.updated_at! > unit!.metadata.created_at!).toBe(true);
+    expect(unit?.metadata).toBeNull();
+
+    const documentResponse = await fetch(
+      `${server.baseUrl}/v1/default/banks/${encodeURIComponent(bankId)}/documents/${encodeURIComponent(documentId)}`,
+    );
+    const document = (await documentResponse.json()) as {
+      id: string;
+      original_text: string;
+      document_metadata: Record<string, string>;
+    };
+    expect(document.id).toBe(documentId);
+    expect(document.original_text).toBe(updatedText);
+    expect(document.document_metadata.logical_id).toBe(updatedLogicalId);
+    expect(document.document_metadata.logical_id).not.toBe(initialLogicalId);
+    expect(document.document_metadata.created_at).toBe(createdAt);
+    expect(document.document_metadata.updated_at).toBe(updatedAt);
+    expect(document.document_metadata.updated_at! > document.document_metadata.created_at!).toBe(true);
   });
 });

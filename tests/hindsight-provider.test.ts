@@ -1,4 +1,5 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { profileBankId } from "../src/identity/bank-id.js";
 import { HindsightAdapter } from "../src/provider/hindsight-adapter.js";
@@ -95,6 +96,105 @@ function validMetadata(overrides: Record<string, string> = {}): Record<string, s
     updated_at: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
+}
+
+function textHash(text: string): string {
+  return createHash("sha256").update(text.trim()).digest("hex");
+}
+
+function documentGetBody(
+  bankId: string,
+  documentId: string,
+  text: string,
+  overrides: {
+    wrongId?: string;
+    wrongBankId?: string;
+    wrongHash?: string;
+    memoryUnitCount?: number;
+    documentMetadata?: unknown;
+    originalText?: string;
+  } = {},
+): Record<string, unknown> {
+  const hash = overrides.wrongHash ?? textHash(text);
+  const metadata =
+    overrides.documentMetadata !== undefined
+      ? overrides.documentMetadata
+      : validMetadata({ content_hash: hash });
+  return {
+    id: overrides.wrongId ?? documentId,
+    bank_id: overrides.wrongBankId ?? bankId,
+    original_text: overrides.originalText ?? text,
+    content_hash: hash,
+    created_at: "2026-09-10T00:00:00.000Z",
+    updated_at: "2026-09-10T01:00:00.000Z",
+    memory_unit_count: overrides.memoryUnitCount ?? 1,
+    nodes_by_fact_type: {},
+    tags: [],
+    document_metadata: metadata,
+    retain_params: {},
+    observation_scopes: {},
+  };
+}
+
+function listBody(
+  documentId: string,
+  text: string,
+  overrides: {
+    unitId?: string;
+    metadata?: Record<string, string> | null;
+    total?: number;
+    items?: Array<Record<string, unknown>>;
+    wrongDocId?: string;
+    wrongText?: string;
+  } = {},
+): Record<string, unknown> {
+  if (overrides.items) {
+    return { items: overrides.items, total: overrides.total ?? overrides.items.length, limit: 2, offset: 0 };
+  }
+  const total = overrides.total ?? 1;
+  if (total === 0) {
+    return { items: [], total: 0, limit: 2, offset: 0 };
+  }
+  const metadata = overrides.metadata === undefined ? null : overrides.metadata;
+  return {
+    items: [
+      {
+        id: overrides.unitId ?? "u1",
+        text: overrides.wrongText ?? text,
+        document_id: overrides.wrongDocId ?? documentId,
+        state: "valid",
+        metadata,
+      },
+    ],
+    total,
+    limit: 2,
+    offset: 0,
+  };
+}
+
+function wireExactFetchRoutes(
+  server: MockServer,
+  bankId: string,
+  documentId: string,
+  text: string,
+  options: {
+    doc?: ReturnType<typeof documentGetBody> | null;
+    docStatus?: number;
+    list?: Record<string, unknown> | null;
+    listStatus?: number;
+    docOverrides?: Parameters<typeof documentGetBody>[3];
+    listOverrides?: Parameters<typeof listBody>[2];
+  } = {},
+): void {
+  const encodedBank = encodeURIComponent(bankId);
+  const encodedDocument = encodeURIComponent(documentId);
+  const documentQuery = new URLSearchParams({ document_id: documentId, limit: "2" }).toString();
+  server.setRoute("GET", `/v1/default/banks/${encodedBank}/documents/${encodedDocument}`, (_req, res) => {
+    json(res, options.docStatus ?? 200, options.doc ?? documentGetBody(bankId, documentId, text, options.docOverrides));
+  });
+  server.setRoute("GET", `/v1/default/banks/${encodedBank}/memories/list?${documentQuery}`, (_req, res) => {
+    json(res, options.listStatus ?? 200, options.list ?? listBody(documentId, text, options.listOverrides));
+  });
 }
 
 describe("HttpClient", () => {
@@ -783,6 +883,214 @@ describe("HindsightAdapter", () => {
       ok: true,
       value: { deleted: false, alreadyAbsent: true, memoryUnitsDeleted: 0 },
     });
+  });
+
+  it("fetchExactOneUnitDocument cross-checks document GET and list with real 0.8.3 shapes", async () => {
+    const bankId = VALID_BANK_ID;
+    const documentId = VALID_DOCUMENT_ID;
+    const text = "exact memory text";
+    const expectedHash = textHash(text);
+    const metadata = validMetadata({ content_hash: expectedHash });
+
+    const okServer = await startMockServer();
+    wireExactFetchRoutes(okServer, bankId, documentId, text);
+    const ok = await new HindsightAdapter({ baseUrl: okServer.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(ok).toEqual({ ok: true, value: { text, unitId: "u1", metadata } });
+    expect(okServer.requests.map((r) => `${r.method} ${r.url}`).sort()).toEqual(
+      [
+        `GET /v1/default/banks/${encodeURIComponent(bankId)}/documents/${encodeURIComponent(documentId)}`,
+        `GET /v1/default/banks/${encodeURIComponent(bankId)}/memories/list?document_id=${encodeURIComponent(documentId)}&limit=2`,
+      ].sort(),
+    );
+
+    const nullUnitMetaServer = await startMockServer();
+    wireExactFetchRoutes(nullUnitMetaServer, bankId, documentId, text, {
+      listOverrides: { metadata: null },
+    });
+    const nullUnitMeta = await new HindsightAdapter({ baseUrl: nullUnitMetaServer.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(nullUnitMeta).toEqual({ ok: true, value: { text, unitId: "u1", metadata } });
+
+    const matchingUnitMetaServer = await startMockServer();
+    wireExactFetchRoutes(matchingUnitMetaServer, bankId, documentId, text, {
+      listOverrides: { metadata },
+    });
+    const matchingUnitMeta = await new HindsightAdapter({
+      baseUrl: matchingUnitMetaServer.baseUrl,
+    }).fetchExactOneUnitDocument(bankId, documentId, expectedHash);
+    expect(matchingUnitMeta).toEqual({ ok: true, value: { text, unitId: "u1", metadata } });
+
+    const dupServer = await startMockServer();
+    wireExactFetchRoutes(dupServer, bankId, documentId, text, {
+      listOverrides: {
+        items: [
+          { id: "u1", text, document_id: documentId, state: "valid", metadata: null },
+          { id: "u2", text, document_id: documentId, state: "valid", metadata: null },
+        ],
+        total: 2,
+      },
+    });
+    const dup = await new HindsightAdapter({ baseUrl: dupServer.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(dup).toMatchObject({ ok: false, category: "validation", ambiguous: true });
+
+    const zeroListServer = await startMockServer();
+    wireExactFetchRoutes(zeroListServer, bankId, documentId, text, { listOverrides: { total: 0 } });
+    const zeroList = await new HindsightAdapter({ baseUrl: zeroListServer.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(zeroList).toMatchObject({ ok: false, category: "validation" });
+
+    const wrongListDocServer = await startMockServer();
+    wireExactFetchRoutes(wrongListDocServer, bankId, documentId, text, {
+      listOverrides: { wrongDocId: "pi-memory:deadbeef" },
+    });
+    const wrongListDoc = await new HindsightAdapter({ baseUrl: wrongListDocServer.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(wrongListDoc).toMatchObject({ ok: false, category: "validation", ambiguous: true });
+
+    const wrongListTextServer = await startMockServer();
+    wireExactFetchRoutes(wrongListTextServer, bankId, documentId, text, {
+      listOverrides: { wrongText: "different text" },
+    });
+    const wrongListText = await new HindsightAdapter({
+      baseUrl: wrongListTextServer.baseUrl,
+    }).fetchExactOneUnitDocument(bankId, documentId, expectedHash);
+    expect(wrongListText).toMatchObject({ ok: false, category: "validation" });
+
+    const badUnitMetaServer = await startMockServer();
+    wireExactFetchRoutes(badUnitMetaServer, bankId, documentId, text, {
+      listOverrides: { metadata: { logical_id: "1" } },
+    });
+    const badUnitMeta = await new HindsightAdapter({ baseUrl: badUnitMetaServer.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(badUnitMeta).toMatchObject({ ok: false, category: "validation", ambiguous: true });
+
+    const malformedUnitMetaServer = await startMockServer();
+    wireExactFetchRoutes(malformedUnitMetaServer, bankId, documentId, text, {
+      list: {
+        items: [{ id: "u1", text, document_id: documentId, state: "valid", metadata: { logical_id: 1 } }],
+        total: 1,
+        limit: 2,
+        offset: 0,
+      },
+    });
+    const malformedUnitMeta = await new HindsightAdapter({
+      baseUrl: malformedUnitMetaServer.baseUrl,
+    }).fetchExactOneUnitDocument(bankId, documentId, expectedHash);
+    expect(malformedUnitMeta).toMatchObject({ ok: false, category: "validation", ambiguous: true });
+
+    const doc404Server = await startMockServer();
+    wireExactFetchRoutes(doc404Server, bankId, documentId, text, { docStatus: 404, doc: { error: "missing" } });
+    const doc404 = await new HindsightAdapter({ baseUrl: doc404Server.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(doc404).toMatchObject({ ok: false, ambiguous: true });
+
+    const doc5xxServer = await startMockServer();
+    wireExactFetchRoutes(doc5xxServer, bankId, documentId, text, { docStatus: 500, doc: { error: "boom" } });
+    const doc5xx = await new HindsightAdapter({ baseUrl: doc5xxServer.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(doc5xx).toMatchObject({ ok: false, ambiguous: true });
+
+    const malformedDocServer = await startMockServer();
+    wireExactFetchRoutes(malformedDocServer, bankId, documentId, text, { doc: { document_id: documentId } });
+    const malformedDoc = await new HindsightAdapter({ baseUrl: malformedDocServer.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(malformedDoc).toMatchObject({ ok: false, category: "validation", ambiguous: true });
+
+    const wrongDocIdServer = await startMockServer();
+    wireExactFetchRoutes(wrongDocIdServer, bankId, documentId, text, {
+      docOverrides: { wrongId: "pi-memory:other" },
+    });
+    const wrongDocId = await new HindsightAdapter({ baseUrl: wrongDocIdServer.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(wrongDocId).toMatchObject({ ok: false, category: "validation", ambiguous: true });
+
+    const wrongBankServer = await startMockServer();
+    wireExactFetchRoutes(wrongBankServer, bankId, documentId, text, {
+      docOverrides: { wrongBankId: "pi-memory-hindsight:profile:wrong" },
+    });
+    const wrongBank = await new HindsightAdapter({ baseUrl: wrongBankServer.baseUrl }).fetchExactOneUnitDocument(
+      bankId,
+      documentId,
+      expectedHash,
+    );
+    expect(wrongBank).toMatchObject({ ok: false, category: "validation", ambiguous: true });
+
+    const wrongDocBodyServer = await startMockServer();
+    wireExactFetchRoutes(wrongDocBodyServer, bankId, documentId, text, {
+      docOverrides: { originalText: "different body", wrongHash: textHash("different body") },
+    });
+    const wrongDocBody = await new HindsightAdapter({
+      baseUrl: wrongDocBodyServer.baseUrl,
+    }).fetchExactOneUnitDocument(bankId, documentId, expectedHash);
+    expect(wrongDocBody).toMatchObject({ ok: false, category: "validation" });
+
+    const wrongDocHashServer = await startMockServer();
+    wireExactFetchRoutes(wrongDocHashServer, bankId, documentId, text, {
+      docOverrides: { wrongHash: "0".repeat(64) },
+    });
+    const wrongDocHash = await new HindsightAdapter({
+      baseUrl: wrongDocHashServer.baseUrl,
+    }).fetchExactOneUnitDocument(bankId, documentId, expectedHash);
+    expect(wrongDocHash).toMatchObject({ ok: false, category: "validation" });
+
+    const missingDocMetaServer = await startMockServer();
+    wireExactFetchRoutes(missingDocMetaServer, bankId, documentId, text, {
+      docOverrides: { documentMetadata: null },
+    });
+    const missingDocMeta = await new HindsightAdapter({
+      baseUrl: missingDocMetaServer.baseUrl,
+    }).fetchExactOneUnitDocument(bankId, documentId, expectedHash);
+    expect(missingDocMeta).toMatchObject({ ok: false, category: "validation", ambiguous: true });
+
+    const zeroUnitsDocServer = await startMockServer();
+    wireExactFetchRoutes(zeroUnitsDocServer, bankId, documentId, text, {
+      docOverrides: { memoryUnitCount: 0 },
+    });
+    const zeroUnitsDoc = await new HindsightAdapter({
+      baseUrl: zeroUnitsDocServer.baseUrl,
+    }).fetchExactOneUnitDocument(bankId, documentId, expectedHash);
+    expect(zeroUnitsDoc).toMatchObject({ ok: false, category: "validation", ambiguous: true });
+
+    const twoUnitsDocServer = await startMockServer();
+    wireExactFetchRoutes(twoUnitsDocServer, bankId, documentId, text, {
+      docOverrides: { memoryUnitCount: 2 },
+    });
+    const twoUnitsDoc = await new HindsightAdapter({
+      baseUrl: twoUnitsDocServer.baseUrl,
+    }).fetchExactOneUnitDocument(bankId, documentId, expectedHash);
+    expect(twoUnitsDoc).toMatchObject({ ok: false, category: "validation", ambiguous: true });
   });
 
   it("rejects forget when postconditions fail or pagination is inconsistent", async () => {

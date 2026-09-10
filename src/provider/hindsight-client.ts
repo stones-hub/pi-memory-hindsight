@@ -71,6 +71,22 @@ export interface DeleteDocumentResponseWire {
   memory_units_deleted: number;
 }
 
+/** Narrow wire shape for GET /documents/{document_id} on Hindsight 0.8.3. */
+export interface DocumentGetResponseWire {
+  id: string;
+  bank_id: string;
+  original_text: string;
+  content_hash: string;
+  created_at: string;
+  updated_at: string;
+  memory_unit_count: number;
+  nodes_by_fact_type?: Record<string, unknown>;
+  tags?: string[] | null;
+  document_metadata: Record<string, string>;
+  retain_params?: Record<string, unknown>;
+  observation_scopes?: Record<string, unknown>;
+}
+
 export interface RecallRequestWire {
   query: string;
   types?: string[];
@@ -188,8 +204,12 @@ export class HindsightClient {
     );
   }
 
-  getDocument(bankId: string, documentId: string, signal?: AbortSignal): Promise<ProviderResult<unknown>> {
-    return this.http.request(
+  getDocument(
+    bankId: string,
+    documentId: string,
+    signal?: AbortSignal,
+  ): Promise<ProviderResult<DocumentGetResponseWire>> {
+    return this.http.request<DocumentGetResponseWire>(
       "GET",
       `/v1/default/banks/${encodeURIComponent(bankId)}/documents/${encodeURIComponent(documentId)}`,
       this.withSignal(signal),

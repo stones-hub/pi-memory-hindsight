@@ -71,8 +71,15 @@ export function createCandidateReviewer(deps: CandidateReviewerDeps) {
       else if (data === "q" || data === "\u001b") return "done";
       else if (data === "r") {
         const row = current();
-        if (row && rejectCandidate(deps.runtime, row.id)) {
-          deps.ctx.ui.notify(t(deps.language, "candidates.rejected"), "info");
+        if (row) {
+          const rejected = rejectCandidate(deps.runtime, row.id);
+          if (rejected.ok) {
+            deps.ctx.ui.notify(t(deps.language, "candidates.rejected"), "info");
+          } else if (rejected.reason === "not_rejectable") {
+            deps.ctx.ui.notify(t(deps.language, "candidates.reject_not_rejectable"), "error");
+          } else {
+            deps.ctx.ui.notify(t(deps.language, "candidates.claim_failed"), "error");
+          }
         }
       } else if (data === "a") {
         const row = current();
@@ -90,13 +97,15 @@ export function createCandidateReviewer(deps: CandidateReviewerDeps) {
             signal: deps.ctx.signal,
           });
           deps.ctx.ui.notify(
-            result.outcome === "approved" ? t(deps.language, "candidates.approved") : t(deps.language, "candidates.action_failed"),
+            result.outcome === "approved"
+              ? t(deps.language, "candidates.approved", { id: result.memoryId })
+              : t(deps.language, "candidates.action_failed"),
             result.outcome === "approved" ? "info" : "error",
           );
         }
       } else if (data === "e") {
         const row = current();
-        if (row) {
+        if (row && row.text != null) {
           const edited = await deps.ctx.ui.input(
             t(deps.language, "candidates.edit_title"),
             row.text,
@@ -116,21 +125,34 @@ export function createCandidateReviewer(deps: CandidateReviewerDeps) {
               signal: deps.ctx.signal,
             });
             deps.ctx.ui.notify(
-              result.outcome === "approved" ? t(deps.language, "candidates.approved") : t(deps.language, "candidates.action_failed"),
+              result.outcome === "approved"
+                ? t(deps.language, "candidates.approved", { id: result.memoryId })
+                : t(deps.language, "candidates.action_failed"),
               result.outcome === "approved" ? "info" : "error",
             );
           }
         }
       } else if (data === "x") {
-        const batch = items.filter((row) => row.proposed_action === "ignore" || row.text.length < 24);
+        const batch = items.filter(
+          (row) => row.proposed_action === "ignore" || (row.text != null && row.text.length < 24),
+        );
         if (batch.length > 0) {
           const confirmed = await deps.ctx.ui.confirm(
             t(deps.language, "candidates.batch_title"),
             t(deps.language, "candidates.batch_body", { count: batch.length }),
           );
           if (confirmed) {
-            for (const row of batch) rejectCandidate(deps.runtime, row.id);
-            deps.ctx.ui.notify(t(deps.language, "candidates.batch_done"), "info");
+            let rejectedCount = 0;
+            for (const row of batch) {
+              const result = rejectCandidate(deps.runtime, row.id);
+              if (result.ok) rejectedCount += 1;
+            }
+            deps.ctx.ui.notify(
+              rejectedCount > 0
+                ? t(deps.language, "candidates.batch_done", { count: rejectedCount })
+                : t(deps.language, "candidates.reject_not_rejectable"),
+              rejectedCount > 0 ? "info" : "error",
+            );
           }
         }
       }

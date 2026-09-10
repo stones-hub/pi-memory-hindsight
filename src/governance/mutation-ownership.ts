@@ -14,7 +14,8 @@ import type { GlobalRuntime } from "../runtime/global-runtime.js";
 import type { MemoryRow, OperationRow, OperationState } from "../db/types.js";
 import { PROVIDER_HTTP_TIMEOUT_MS } from "../provider/http-client.js";
 import { validateIdempotencyKey } from "../provider/validation.js";
-import { mutationNowMs } from "./mutation-clock.js";
+import { isValidOwnedMemoryLocator } from "./memory-locator.js";
+import { mutationNowIso, mutationNowMs } from "./mutation-clock.js";
 
 /**
  * Worst-case sequential HTTP calls in one mutation attempt:
@@ -284,7 +285,12 @@ export function normalizeMutationOwnership(runtime: GlobalRuntime, row: MemoryRo
     if (ownerOp.state === "committed") {
       // Committed owner + reconciling row is inconsistent: fail closed rather than
       // clearing and selecting unrelated history.
-      if (row.status === "active" || row.status === "deleted" || row.status === "superseded") {
+      if (
+        row.status === "active" ||
+        row.status === "deleted" ||
+        row.status === "superseded" ||
+        row.status === "expired"
+      ) {
         runtime.repos.memories.clearMutationOwner(row.id, row.mutation_owner_key);
         return runtime.repos.memories.getById(row.id) ?? row;
       }
@@ -381,7 +387,7 @@ export function claimMemoryMutation(
 
   const resuming = row.mutation_owner_key === ownerKey;
   if (resuming) {
-    if (row.status === "deleted" || row.status === "superseded") {
+    if (row.status === "deleted" || row.status === "superseded" || row.status === "expired") {
       return {
         ok: false,
         code: "not_claimable",
@@ -393,7 +399,7 @@ export function claimMemoryMutation(
     return { ok: true, row, generation: row.mutation_generation };
   }
 
-  if (row.status === "deleted" || row.status === "superseded") {
+  if (row.status === "deleted" || row.status === "superseded" || row.status === "expired") {
     return {
       ok: false,
       code: "not_claimable",
@@ -521,6 +527,241 @@ export function forgetIdempotencyKey(
   return `forget:${memoryId}:g${generation}:${textHash}:${documentId}`;
 }
 
+export function expireIdempotencyKey(
+  memoryId: string,
+  generation: number,
+  textHash: string,
+  documentId: string,
+): string {
+  return `expire:${memoryId}:g${generation}:${textHash}:${documentId}`;
+}
+
+export function isExpireOwnerKey(row: MemoryRow): boolean {
+  const key = expireIdempotencyKey(row.id, row.mutation_generation, row.text_hash, row.document_id);
+  return row.mutation_owner_key === key;
+}
+
+export type PrepareExpiryHandoffResult =
+  | { ok: true; memoryId: string; alreadyExpireOwned: boolean }
+  | {
+      ok: false;
+      reason: "not_found" | "not_due" | "not_foreign" | "live_owner" | "incoherent";
+    };
+
+const TEXT_HASH_HEX = /^[0-9a-f]{64}$/;
+
+/** Test-only: force expire-op creation to fail after row handoff CAS. */
+let blockHandoffExpireOpCreateForTests = false;
+/** Test-only: force final expire-op coherence check to fail. */
+let blockHandoffFinalCoherenceForTests = false;
+/** Test-only: force foreign-op retirement to fail after coherence passes. */
+let blockHandoffForeignRetireForTests = false;
+
+export function setBlockHandoffExpireOpCreateForTests(value: boolean): void {
+  blockHandoffExpireOpCreateForTests = value;
+}
+
+export function setBlockHandoffFinalCoherenceForTests(value: boolean): void {
+  blockHandoffFinalCoherenceForTests = value;
+}
+
+export function setBlockHandoffForeignRetireForTests(value: boolean): void {
+  blockHandoffForeignRetireForTests = value;
+}
+
+function retireForeignOperationForExpiryHandoff(
+  runtime: GlobalRuntime,
+  foreignKey: string,
+): void {
+  if (blockHandoffForeignRetireForTests) {
+    throw new ExpiryHandoffRollbackError("incoherent");
+  }
+  const foreignOp = runtime.repos.operations.getByKey(foreignKey);
+  if (!foreignOp) {
+    throw new ExpiryHandoffRollbackError("incoherent");
+  }
+  if (foreignOp.state === "failed") return;
+  if (foreignOp.state === "pending" || foreignOp.state === "reconciling") {
+    if (!runtime.repos.operations.tryTransition(foreignKey, foreignOp.state, "failed")) {
+      throw new ExpiryHandoffRollbackError("incoherent");
+    }
+    return;
+  }
+  throw new ExpiryHandoffRollbackError("incoherent");
+}
+
+/**
+ * Forces MemoryDatabase.transaction to ROLLBACK during expiry handoff after any
+ * mutation has begun.
+ */
+export class ExpiryHandoffRollbackError extends Error {
+  constructor(public readonly reason: Extract<PrepareExpiryHandoffResult, { ok: false }>["reason"]) {
+    super("expiry handoff rolled back");
+    this.name = "ExpiryHandoffRollbackError";
+  }
+}
+
+/** Read-only foreign-op locator/action/hash rules for expiry handoff eligibility. */
+export function isForeignOpCoherentForHandoff(row: MemoryRow, op: OperationRow): boolean {
+  if (op.memory_id !== row.id) return false;
+  if (op.bank_id !== row.bank_id || op.document_id !== row.document_id) return false;
+  if (op.memory_generation !== null && op.memory_generation !== row.mutation_generation) return false;
+  if (op.state === "committed") return false;
+  const hash = op.expected_text_hash;
+  switch (op.action) {
+    case "delete":
+      return hash === row.text_hash;
+    case "replace":
+    case "create":
+      return hash !== null && TEXT_HASH_HEX.test(hash);
+    default:
+      return false;
+  }
+}
+
+/** Read-only: foreign-owned due row eligible for handoff (no SQLite mutations). */
+export function isForeignHandoffEligibleReadOnly(
+  runtime: GlobalRuntime,
+  row: MemoryRow,
+  nowIso: string,
+): boolean {
+  if (!isValidOwnedMemoryLocator(runtime, row)) return false;
+  if (!row.expires_at || row.expires_at > nowIso) return false;
+  if (!row.mutation_owner_key || isExpireOwnerKey(row)) return false;
+  const foreignOp = runtime.repos.operations.getByKey(row.mutation_owner_key);
+  if (!foreignOp) return false;
+  const allOps = runtime.repos.operations.listByMemoryId(row.id);
+  if (!operationMatchesCurrentRow(foreignOp, row, allOps)) return false;
+  if (!isForeignOpCoherentForHandoff(row, foreignOp)) return false;
+  if (foreignOp.state === "in_progress" && !isOperationLeaseExpired(foreignOp)) return false;
+  if (pickRecoverableOperation(runtime, row)?.idempotency_key !== foreignOp.idempotency_key) return false;
+  return true;
+}
+
+/**
+ * When a time-bounded memory is due but still owned by an older mutation
+ * (replace/forget/create), atomically bind the deterministic expire delete
+ * operation at the next generation. Never steals a live in_progress lease;
+ * stale delayed completions fail CAS on the old generation.
+ */
+export function prepareExpiryHandoff(
+  runtime: GlobalRuntime,
+  memoryId: string,
+): PrepareExpiryHandoffResult {
+  try {
+    return runtime.db.transaction(() => {
+      const nowIso = mutationNowIso();
+      const row = runtime.repos.memories.getById(memoryId);
+      if (!row) return { ok: false, reason: "not_found" };
+      if (!row.expires_at || row.expires_at > nowIso) {
+        return { ok: false, reason: "not_due" };
+      }
+      if (!row.mutation_owner_key) {
+        return { ok: false, reason: "not_foreign" };
+      }
+      if (!isValidOwnedMemoryLocator(runtime, row)) {
+        return { ok: false, reason: "incoherent" };
+      }
+      if (isExpireOwnerKey(row)) {
+        return { ok: true, memoryId, alreadyExpireOwned: true };
+      }
+
+      const foreignKey = row.mutation_owner_key;
+      let foreignOp = runtime.repos.operations.getByKey(foreignKey);
+      if (!foreignOp) return { ok: false, reason: "incoherent" };
+      const allOps = runtime.repos.operations.listByMemoryId(memoryId);
+      if (!operationMatchesCurrentRow(foreignOp, row, allOps)) {
+        return { ok: false, reason: "incoherent" };
+      }
+      if (!isForeignOpCoherentForHandoff(row, foreignOp)) {
+        return { ok: false, reason: "incoherent" };
+      }
+      if (pickRecoverableOperation(runtime, row)?.idempotency_key !== foreignOp.idempotency_key) {
+        return { ok: false, reason: "incoherent" };
+      }
+
+      if (foreignOp.state === "in_progress") {
+        if (!isOperationLeaseExpired(foreignOp)) {
+          return { ok: false, reason: "live_owner" };
+        }
+        foreignOp = takeOverExpiredInProgress(runtime, foreignOp);
+        if (foreignOp.state === "in_progress") {
+          throw new ExpiryHandoffRollbackError("live_owner");
+        }
+      }
+
+      const newGeneration = row.mutation_generation + 1;
+      const expireKey = expireIdempotencyKey(row.id, newGeneration, row.text_hash, row.document_id);
+
+      if (
+        !runtime.repos.memories.tryHandoffToExpireOwner({
+          id: memoryId,
+          foreignOwnerKey: foreignKey,
+          expectedGeneration: row.mutation_generation,
+          newGeneration,
+          expireOwnerKey: expireKey,
+          nowIso,
+        })
+      ) {
+        throw new ExpiryHandoffRollbackError("incoherent");
+      }
+
+      if (blockHandoffExpireOpCreateForTests) {
+        throw new ExpiryHandoffRollbackError("incoherent");
+      }
+
+      if (!runtime.repos.operations.getByKey(expireKey)) {
+        const created = runtime.repos.operations.tryCreate({
+          idempotencyKey: expireKey,
+          memoryId,
+          action: "delete",
+          bankId: row.bank_id,
+          documentId: row.document_id,
+          expectedTextHash: row.text_hash,
+          memoryGeneration: newGeneration,
+        });
+        if (!created && !runtime.repos.operations.getByKey(expireKey)) {
+          throw new ExpiryHandoffRollbackError("incoherent");
+        }
+      }
+
+      const updated = runtime.repos.memories.getById(memoryId)!;
+      const expireOp = runtime.repos.operations.getByKey(expireKey)!;
+      const updatedOps = runtime.repos.operations.listByMemoryId(memoryId);
+      if (blockHandoffFinalCoherenceForTests) {
+        throw new ExpiryHandoffRollbackError("incoherent");
+      }
+      if (!isCoherentExpireOperation(updated, expireOp, updatedOps)) {
+        throw new ExpiryHandoffRollbackError("incoherent");
+      }
+
+      retireForeignOperationForExpiryHandoff(runtime, foreignKey);
+
+      return { ok: true, memoryId, alreadyExpireOwned: false };
+    });
+  } catch (err) {
+    if (err instanceof ExpiryHandoffRollbackError) {
+      return { ok: false, reason: err.reason };
+    }
+    throw err;
+  }
+}
+
+/** Exact expire-operation coherence: never infer from action='delete' or key prefix alone. */
+export function isCoherentExpireOperation(
+  row: MemoryRow,
+  op: OperationRow,
+  allOps: OperationRow[],
+): boolean {
+  if (op.action !== "delete") return false;
+  const key = expireIdempotencyKey(row.id, row.mutation_generation, row.text_hash, row.document_id);
+  if (op.idempotency_key !== key || row.mutation_owner_key !== key) return false;
+  if (op.memory_id !== row.id) return false;
+  if (op.bank_id !== row.bank_id || op.document_id !== row.document_id) return false;
+  if (op.expected_text_hash !== row.text_hash) return false;
+  return operationMatchesCurrentRow(op, row, allOps);
+}
+
 export function isActiveDuplicateRow(row: MemoryRow | undefined, textHash: string): row is MemoryRow {
   return !!row && row.status === "active" && row.text_hash === textHash;
 }
@@ -533,7 +774,7 @@ export function operationIsResumableCreate(
   if (op.action !== "create" || op.expected_text_hash !== textHash) return false;
   if (!row) return false;
   if (op.state === "committed") return row.status === "active" && row.text_hash === textHash;
-  if (row.status === "deleted" || row.status === "superseded") return false;
+  if (row.status === "deleted" || row.status === "superseded" || row.status === "expired") return false;
   return row.status === "active" || row.status === "reconciling";
 }
 
@@ -608,7 +849,7 @@ export function resolveCreateIdempotencyKey(
     }
 
     let next: string;
-    if (row && (row.status === "deleted" || row.status === "superseded")) {
+    if (row && (row.status === "deleted" || row.status === "superseded" || row.status === "expired")) {
       next =
         key === baseKey
           ? reviveCreateIdempotencyKey(baseKey, row)

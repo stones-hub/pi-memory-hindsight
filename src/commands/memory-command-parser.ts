@@ -10,14 +10,17 @@ export type ParsedMemoryCommand =
   | { kind: "language"; language: Language }
   | { kind: "remember"; scope: Scope; memoryType: MemoryType; content: string }
   | { kind: "update"; id: string; content: string }
+  | { kind: "list"; filter: "all" | "profile" | "project" }
+  | { kind: "show"; id: string }
+  | { kind: "cleanup-status" }
+  | { kind: "cleanup-now" }
   | { kind: "candidates" }
   | { kind: "candidates-list" }
   | { kind: "candidates-approve"; id: string }
   | { kind: "candidates-reject"; id: string }
   | { kind: "candidates-edit-approve"; id: string; content: string }
   | { kind: "forget"; id: string }
-  | { kind: "reflect"; scope: Scope; query: string }
-  | { kind: "extract" };
+  | { kind: "reflect"; scope: Scope; query: string };
 
 function isWhitespace(char: string): boolean {
   return /\s/.test(char);
@@ -82,6 +85,17 @@ export function parseMemoryCommand(input: string): ParsedMemoryCommand | null {
       const content = consumeRemainder(input, second.next);
       return content ? { kind: "update", id: second.token, content } : null;
     }
+    case "list":
+      if (second.token === null) return { kind: "list", filter: "all" };
+      if (second.token === "profile" && third.token === null) return { kind: "list", filter: "profile" };
+      if (second.token === "project" && third.token === null) return { kind: "list", filter: "project" };
+      return null;
+    case "show":
+      return second.token !== null && third.token === null ? { kind: "show", id: second.token } : null;
+    case "cleanup":
+      if (second.token === "status" && third.token === null) return { kind: "cleanup-status" };
+      if (second.token === "now" && third.token === null) return { kind: "cleanup-now" };
+      return null;
     case "candidates":
       if (second.token === null) return { kind: "candidates" };
       if (second.token === "list" && third.token === null) return { kind: "candidates-list" };
@@ -104,8 +118,6 @@ export function parseMemoryCommand(input: string): ParsedMemoryCommand | null {
       const query = consumeRemainder(input, second.next);
       return query ? { kind: "reflect", scope, query } : null;
     }
-    case "extract":
-      return second.token === null ? { kind: "extract" } : null;
     default:
       return null;
   }

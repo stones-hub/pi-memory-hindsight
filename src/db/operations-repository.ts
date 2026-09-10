@@ -142,4 +142,24 @@ export class OperationsRepository {
       )
       .run(mutationNowIso(), idempotencyKey);
   }
+
+  /** Deletes terminal operations older than cutoff that are not needed for live recovery. */
+  deleteTerminalOlderThan(cutoffIso: string, limit: number): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM operations
+         WHERE idempotency_key IN (
+           SELECT o.idempotency_key FROM operations o
+           JOIN memories m ON m.id = o.memory_id
+           WHERE o.state IN ('committed', 'failed')
+             AND o.updated_at < ?
+             AND m.mutation_owner_key IS NULL
+             AND m.status != 'reconciling'
+           ORDER BY o.updated_at ASC
+           LIMIT ?
+         )`,
+      )
+      .run(cutoffIso, limit);
+    return Number(result.changes);
+  }
 }

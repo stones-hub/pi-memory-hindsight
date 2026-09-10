@@ -6,6 +6,7 @@ import type { MemoryRow, MemoryType, OperationRow, Scope, VerificationState } fr
 import { validateIdempotencyKey, isLegacyOwnedDocumentRow } from "../provider/validation.js";
 import { buildProviderMetadata, textHashOf } from "./remember-service.js";
 import { claimMemoryMutation, beginOwnedOperation, boundMutationSignal, applyProgressScopedOutcome, MutationTxRollbackError, runAtomicFinalization, postIssuanceFailureMustKeepReconciling } from "./mutation-ownership.js";
+import { mutationNowMs } from "./mutation-clock.js";
 
 export interface ReplaceRequest {
   targetMemoryId: string;
@@ -234,14 +235,13 @@ export async function replaceMemory(runtime: GlobalRuntime, request: ReplaceRequ
   if (!preIdentity.ok) {
     return { outcome: "rejected", reason: preIdentity.reason, code: preIdentity.code };
   }
-  if (preTarget!.status === "deleted" || preTarget!.status === "superseded") {
+  if (preTarget!.status === "deleted" || preTarget!.status === "superseded" || preTarget!.status === "expired") {
     return {
       outcome: "rejected",
       reason: `target memory is not active (status: ${preTarget!.status})`,
       code: "target_not_active",
     };
   }
-
   const existingOpEarly = runtime.repos.operations.getByKey(idempotencyKey);
   if (existingOpEarly) {
     if (
@@ -270,6 +270,18 @@ export async function replaceMemory(runtime: GlobalRuntime, request: ReplaceRequ
         outcome: "rejected",
         reason: "committed replace operation does not match current memory state",
         code: "mismatched_committed_operation",
+      };
+    }
+  }
+
+  const pastExpiry = preTarget!.expires_at && Date.parse(preTarget!.expires_at) <= mutationNowMs();
+  if (pastExpiry) {
+    const sameKeyResume = existingOpEarly && existingOpEarly.state !== "committed";
+    if (!sameKeyResume) {
+      return {
+        outcome: "rejected",
+        reason: "target memory is past its expiry and cannot be updated",
+        code: "target_expired",
       };
     }
   }

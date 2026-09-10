@@ -98,6 +98,19 @@ and prove that exactly one live unit exists and its text equals the approved tex
 
 Direct list-by-document verification (used for create/replace/reverify reconcile-before-retry) treats only a valid complete pagination window that positively proves exact zero live units, or exactly one valid unit with text mismatch, as non-ambiguous/retry-safe. Transport, timeout, abort, HTTP errors, malformed responses, pagination inconsistency, wrong document id, invalid unit id, or multiple units are ambiguous/unproven and must not trigger another retain. `verifyDeletionPostconditions` already forces ambiguity on the same unproven GET/list classes.
 
+### Exact discovery (`/memory list` / `/memory show`)
+
+On real Hindsight 0.8.3, governance metadata for an owned one-memory document is returned on **document GET**, not on list units:
+
+```text
+GET /v1/default/banks/{bank_id}/documents/{document_id}
+GET /v1/default/banks/{bank_id}/memories/list?document_id=<document-id>&limit=2
+```
+
+The document response includes `id` (document id), `bank_id`, `original_text`, `content_hash`, `memory_unit_count`, and `document_metadata` (`dict[str,str]`). Provider `created_at` / `updated_at` on the document are Hindsight-internal timestamps and must not be compared to SQLite governance timestamps. List units for the same document may return `metadata: null` even when retain carried governance fields; authoritative metadata for discovery is `document_metadata`.
+
+`fetchExactOneUnitDocument` performs both reads under one abort/deadline, cross-checks ids/body/hash/`memory_unit_count === 1`/pagination, allows null unit metadata, requires matching non-null unit metadata when present, and returns validated `document_metadata` for `providerMetadataMatchesLocalRow`. Any malformed/404/5xx/timeout/abort/mismatch fails closed with content unavailable. Never enumerate banks or use fuzzy recall for discovery.
+
 ### Idempotency and updates
 
 Retain with the same `document_id` defaults to replace semantics: old document data and associated units are deleted before the new representation is written. This makes the deterministic document ID the idempotency/reconciliation key.

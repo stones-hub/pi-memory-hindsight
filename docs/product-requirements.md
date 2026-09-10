@@ -117,7 +117,7 @@ A project without `enabled: true` receives no Project recall, extraction, creati
 - Model output is untrusted and must pass schema, scope, sensitivity, length, evidence, duplicate, and conflict validation.
 - Automatic extraction writes candidates only to SQLite. It never writes approved memory to Hindsight.
 - Candidates remain pending for 30 days, then become expired and disappear from the default pending view.
-- Extraction failure is non-blocking, has no provider fallback, creates no partial candidate, and can be retried with `/memory extract`.
+- Extraction failure is non-blocking, has no provider fallback, creates no partial candidate, and does not block Pi; a later eligible settled turn may extract normally. Users can also store content explicitly with `/memory remember` or `memory_remember`.
 
 ## Explicit remembering
 
@@ -141,13 +141,27 @@ All entry points use the same governance services as candidate approval. Explici
 |---|---|
 | Profile preference | No automatic expiry |
 | Decision | No automatic expiry; review on conflict |
-| Project fact | Requires re-verification after 180 days |
+| Project fact | 180 days; recall stops at `expires_at`; bounded maintenance physically deletes into `expired` |
 | Lesson | No automatic expiry; show last verification |
-| Task state | 30 days |
-| Inference / reflection | 90 days and always unverified |
-| Pending candidate | Expires after 30 days |
+| Task state | 30 days; same expiry protocol as project fact |
+| Inference / reflection | 90 days, always unverified; same expiry protocol |
+| Pending candidate | Expires after 30 days; terminal bodies purged immediately |
 
 Current explicit instruction overrides old memory. An explicit long-term “remember” request may replace conflicting memory after conflict handling. “This time” never changes long-term memory. “From now on” without explicit remember creates an approval candidate.
+
+## Discovery
+
+- `/memory list`, `/memory list profile`, `/memory list project`, and `/memory show <id>` are exact, SQLite-proven, Bank-non-enumerating read paths.
+- Default list is bounded to 20 effective-active local memories from Profile plus the current enabled Project.
+- Provider outages may omit bodies (`content unavailable`) but never invent unverified text.
+- Remember success, candidate approval, candidate listings, and `/memory last` expose IDs when locally governed; shared Project recalls without a local row are read-only.
+
+## Retention and cleanup
+
+- Terminal candidate bodies are purged immediately on approved/rejected/expired; metadata retained 90 days.
+- Terminal operations 30 days; resolved conflicts 90 days; audit/usage 90 days with a 10,000-row cap each; deleted/expired memory tombstones 90 days.
+- Never purge pending/in-progress/reconciling operations, open conflicts, reviewable Candidates, owned mutations, or referenced tombstones.
+- `/memory cleanup status` and confirmed `/memory cleanup now`; automatic maintenance at most once per 24h after TUI `agent_settled`, max 10 formal expiries per pass, durable SQLite lease coordination, no automatic `VACUUM`.
 
 ## Deletion
 

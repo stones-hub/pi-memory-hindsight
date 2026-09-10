@@ -16,6 +16,7 @@ import { MemoriesRepository } from "../db/memories-repository.js";
 import { CandidatesRepository } from "../db/candidates-repository.js";
 import { OperationsRepository } from "../db/operations-repository.js";
 import { AuditRepository, ConflictsRepository, UsageRepository } from "../db/audit-conflicts-usage-repository.js";
+import { MaintenanceRepository } from "../db/maintenance-repository.js";
 import { loadGlobalConfig, loadHindsightApiKey } from "../config/global-config.js";
 import { HindsightAdapter } from "../provider/hindsight-adapter.js";
 import { profileBankId } from "../identity/bank-id.js";
@@ -36,6 +37,7 @@ export interface GlobalRuntime {
     conflicts: ConflictsRepository;
     audit: AuditRepository;
     usage: UsageRepository;
+    maintenance: MaintenanceRepository;
   };
 }
 
@@ -111,6 +113,7 @@ async function initLocalRuntime(): Promise<LocalRuntimeResult> {
         conflicts: new ConflictsRepository(db),
         audit: new AuditRepository(db),
         usage: new UsageRepository(db),
+        maintenance: new MaintenanceRepository(db),
       },
     },
   };

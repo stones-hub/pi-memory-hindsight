@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { MemoryDatabase } from "./database.js";
 import type { CandidateRow, CandidateState, MemoryType, ProposedAction, Scope } from "./types.js";
 import { candidateExpiryFrom } from "./lifecycle.js";
+import { mutationNowIso } from "../governance/mutation-clock.js";
 import { assertScopeTypeProjectIdentityInvariant } from "./validation.js";
 
 export interface NewCandidateInput {
@@ -16,6 +17,10 @@ export interface NewCandidateInput {
   /** Immutable snapshot of the target's text hash at candidate creation; required when targeting. */
   expectedTargetTextHash?: string | null;
   projectIdentity: string | null;
+}
+
+function hashCandidateText(text: string): string {
+  return createHash("sha256").update(text.trim()).digest("hex");
 }
 
 export class CandidatesRepository {
@@ -39,8 +44,8 @@ export class CandidatesRepository {
         `INSERT INTO candidates (
           id, scope, memory_type, text, evidence_summary, source_session_id, source_ref,
           proposed_action, target_memory_id, expected_target_text_hash, project_identity, state, created_at, updated_at, expires_at,
-          approved_memory_id, failure_code
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, NULL, NULL)`,
+          approved_memory_id, failure_code, text_hash, body_purged_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, NULL, NULL, NULL, NULL)`,
       )
       .run(
         id,
@@ -87,27 +92,74 @@ export class CandidatesRepository {
   }
 
   listReviewable(includeExpired: boolean): CandidateRow[] {
-    const nowIso = new Date().toISOString();
+    const nowIso = mutationNowIso();
     return this.db
       .prepare(
         `SELECT * FROM candidates
          WHERE
-           (state IN ('pending', 'approving', 'failed', 'reconciling') AND expires_at > ?)
+           state IN ('failed', 'reconciling')
+           OR (state IN ('pending', 'approving') AND expires_at > ?)
            OR (? = 1 AND (state = 'expired' OR (state = 'pending' AND expires_at <= ?)))
          ORDER BY created_at DESC`,
       )
       .all(nowIso, includeExpired ? 1 : 0, nowIso) as unknown as CandidateRow[];
   }
 
-  /** Sweeps expired reviewable candidates into the `expired` state. Returns count changed. */
+  /**
+   * Sweeps unclaimed pending candidates past TTL into `expired` and purges bodies
+   * atomically. Failed/reconciling/approving candidates stay recoverable.
+   */
   sweepExpired(): number {
-    const nowIso = new Date().toISOString();
-    const result = this.db
+    const nowIso = mutationNowIso();
+    const due = this.db
       .prepare(
-        "UPDATE candidates SET state = 'expired', updated_at = ? WHERE state IN ('pending', 'failed', 'reconciling') AND expires_at <= ?",
+        `SELECT id, text FROM candidates
+         WHERE state = 'pending' AND expires_at <= ?`,
       )
-      .run(nowIso, nowIso);
-    return Number(result.changes);
+      .all(nowIso) as Array<{ id: string; text: string | null }>;
+    let changed = 0;
+    const update = this.db.prepare(
+      `UPDATE candidates
+       SET state = 'expired', updated_at = ?, text = NULL, evidence_summary = NULL,
+           text_hash = COALESCE(text_hash, ?), body_purged_at = COALESCE(body_purged_at, ?)
+       WHERE id = ? AND state = 'pending' AND expires_at <= ?`,
+    );
+    for (const row of due) {
+      const textHash = row.text != null ? hashCandidateText(row.text) : null;
+      const result = update.run(nowIso, textHash, nowIso, row.id, nowIso);
+      changed += Number(result.changes);
+    }
+    return changed;
+  }
+
+  /**
+   * Purges bodies for any terminal candidates that still retain text
+   * (e.g. pre-v7 rows). Returns count purged.
+   */
+  purgeLingeringTerminalBodies(limit = 100): number {
+    const nowIso = new Date().toISOString();
+    const rows = this.db
+      .prepare(
+        `SELECT id, text FROM candidates
+         WHERE state IN ('approved', 'rejected', 'expired')
+           AND body_purged_at IS NULL
+           AND text IS NOT NULL
+         ORDER BY updated_at ASC
+         LIMIT ?`,
+      )
+      .all(limit) as Array<{ id: string; text: string }>;
+    let purged = 0;
+    const update = this.db.prepare(
+      `UPDATE candidates
+       SET text = NULL, evidence_summary = NULL,
+           text_hash = COALESCE(text_hash, ?), body_purged_at = ?, updated_at = updated_at
+       WHERE id = ? AND state IN ('approved', 'rejected', 'expired') AND body_purged_at IS NULL`,
+    );
+    for (const row of rows) {
+      const result = update.run(hashCandidateText(row.text), nowIso, row.id);
+      purged += Number(result.changes);
+    }
+    return purged;
   }
 
   tryMarkApproved(
@@ -123,10 +175,12 @@ export class CandidatesRepository {
     },
   ): boolean {
     const requiredId = coherence.requiredMemoryId ?? approvedMemoryId;
+    const nowIso = new Date().toISOString();
     const result = this.db
       .prepare(
         `UPDATE candidates
-         SET state = 'approved', approved_memory_id = ?, failure_code = NULL, updated_at = ?
+         SET state = 'approved', approved_memory_id = ?, failure_code = NULL, updated_at = ?,
+             text = NULL, evidence_summary = NULL, text_hash = ?, body_purged_at = ?
          WHERE id = ?
            AND state = 'approving'
            AND EXISTS (
@@ -145,7 +199,9 @@ export class CandidatesRepository {
       )
       .run(
         approvedMemoryId,
-        new Date().toISOString(),
+        nowIso,
+        coherence.textHash,
+        nowIso,
         id,
         approvedMemoryId,
         requiredId,
@@ -158,12 +214,13 @@ export class CandidatesRepository {
     return Number(result.changes) === 1;
   }
 
+  /** Manual rejection is allowed for untouched pending or definite failed candidates. */
   tryMarkRejected(id: string): boolean {
-    return this.tryTransitionFromPending(id, "rejected");
+    return this.tryTransitionToTerminal(id, "rejected", ["pending", "failed"]);
   }
 
   tryMarkExpired(id: string): boolean {
-    return this.tryTransitionFromPending(id, "expired");
+    return this.tryTransitionToTerminal(id, "expired", ["pending"]);
   }
 
   updateText(id: string, text: string): boolean {
@@ -183,20 +240,19 @@ export class CandidatesRepository {
    * write and must report that honestly.
    */
   tryClaimForApproval(id: string): boolean {
-    const now = new Date().toISOString();
+    const nowIso = mutationNowIso();
     const result = this.db
       .prepare(
         `UPDATE candidates
          SET state = 'approving', failure_code = NULL, updated_at = ?
          WHERE id = ?
+           AND text IS NOT NULL
            AND (
-             state = 'pending'
-             OR state = 'failed'
-             OR state = 'reconciling'
-           )
-           AND expires_at > ?`,
+             (state = 'pending' AND expires_at > ?)
+             OR state IN ('failed', 'reconciling')
+           )`,
       )
-      .run(now, id, now);
+      .run(nowIso, id, nowIso);
     return Number(result.changes) === 1;
   }
 
@@ -216,12 +272,70 @@ export class CandidatesRepository {
       .run(new Date().toISOString(), id);
   }
 
-  private tryTransitionFromPending(id: string, nextState: "rejected" | "expired"): boolean {
+  /** Purge bodies for terminal candidates linked to a forgotten/expired memory. */
+  purgeBodiesForMemory(memoryId: string): number {
+    const nowIso = new Date().toISOString();
+    const rows = this.db
+      .prepare(
+        `SELECT id, text FROM candidates
+         WHERE (approved_memory_id = ? OR target_memory_id = ?)
+           AND state IN ('approved', 'rejected', 'expired')
+           AND body_purged_at IS NULL`,
+      )
+      .all(memoryId, memoryId) as Array<{ id: string; text: string | null }>;
+    let purged = 0;
+    const update = this.db.prepare(
+      `UPDATE candidates
+       SET text = NULL, evidence_summary = NULL,
+           text_hash = COALESCE(text_hash, ?), body_purged_at = COALESCE(body_purged_at, ?)
+       WHERE id = ? AND state IN ('approved', 'rejected', 'expired')`,
+    );
+    for (const row of rows) {
+      const textHash = row.text != null ? hashCandidateText(row.text) : null;
+      purged += Number(update.run(textHash, nowIso, row.id).changes);
+    }
+    return purged;
+  }
+
+  deleteTerminalOlderThan(cutoffIso: string, limit: number): number {
     const result = this.db
       .prepare(
-        "UPDATE candidates SET state = ?, updated_at = ? WHERE id = ? AND state IN ('pending', 'failed', 'reconciling')",
+        `DELETE FROM candidates
+         WHERE id IN (
+           SELECT id FROM candidates
+           WHERE state IN ('approved', 'rejected', 'expired')
+             AND body_purged_at IS NOT NULL
+             AND updated_at < ?
+             AND NOT EXISTS (
+               SELECT 1 FROM conflicts c WHERE c.candidate_id = candidates.id
+             )
+           ORDER BY updated_at ASC
+           LIMIT ?
+         )`,
       )
-      .run(nextState, new Date().toISOString(), id);
+      .run(cutoffIso, limit);
+    return Number(result.changes);
+  }
+
+  private tryTransitionToTerminal(
+    id: string,
+    nextState: "rejected" | "expired",
+    allowedStates: CandidateState[],
+  ): boolean {
+    const row = this.getById(id);
+    if (!row || !allowedStates.includes(row.state)) return false;
+    if (row.text == null) return false;
+    const nowIso = new Date().toISOString();
+    const textHash = hashCandidateText(row.text);
+    const placeholders = allowedStates.map(() => "?").join(", ");
+    const result = this.db
+      .prepare(
+        `UPDATE candidates
+         SET state = ?, updated_at = ?, text = NULL, evidence_summary = NULL,
+             text_hash = ?, body_purged_at = ?
+         WHERE id = ? AND state IN (${placeholders})`,
+      )
+      .run(nextState, nowIso, textHash, nowIso, id, ...allowedStates);
     return Number(result.changes) === 1;
   }
 }

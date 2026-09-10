@@ -32,6 +32,7 @@ import { selectExtractionMaterial } from "./material.js";
 import { parseExtractionResponse } from "./response-parser.js";
 import { scanForSensitiveContent, looksLikeBulkContent, truncateUnicode } from "../security/filters.js";
 import { t, normalizeLanguage } from "../i18n/messages.js";
+import { maybeRunAutomaticMaintenance } from "../governance/cleanup-service.js";
 
 const MIN_MATERIAL_CHARS = 40;
 const MAX_MATERIAL_CHARS = 4000;
@@ -65,146 +66,195 @@ export async function handleAgentSettled(
   const sessionId = ctx.sessionManager.getSessionId();
   const session = peekSessionState(sessionId);
   if (!session || !isSessionStateCurrent(sessionId, session)) return;
-  const snapshot = claimPendingExtractionSnapshot(sessionId);
-  if (!snapshot || session.memoryOff) return;
-  const model = ctx.model;
-  if (!model) return;
-  await enqueueSessionExtraction(sessionId, async () => {
-    if (ctx.signal?.aborted || !isSessionStateCurrent(sessionId, session) || session.memoryOff) return;
-    const material = snapshot.material;
-    if (material.trim().length < MIN_MATERIAL_CHARS) return;
 
-    const runtimeResult = await getGlobalRuntime();
-    if (!runtimeResult.ok || ctx.signal?.aborted || !isSessionStateCurrent(sessionId, session) || session.memoryOff) return;
-    const { runtime } = runtimeResult;
-    runtime.repos.candidates.sweepExpired();
-
-    const projectBank = await resolveProjectBank(ctx.cwd);
-    if (ctx.signal?.aborted || !isSessionStateCurrent(sessionId, session)) return;
-    const controller = new AbortController();
-    session.extractionController = controller;
-    const timeoutSignal = AbortSignal.timeout(EXTRACTION_TIMEOUT_MS);
-    const signal = ctx.signal
-      ? AbortSignal.any([controller.signal, ctx.signal, timeoutSignal])
-      : AbortSignal.any([controller.signal, timeoutSignal]);
-
-    try {
-      const context: Context = {
-        systemPrompt: buildExtractionSystemPrompt(projectBank.enabled),
-        messages: [
-          { role: "user", content: truncateUnicode(material, MAX_MATERIAL_CHARS), timestamp: Date.now() },
-        ],
-      };
-
-      let response: AssistantMessage;
+  const scheduleMaintenance = (): void => {
+    void (async () => {
+      if (ctx.signal?.aborted || !isSessionStateCurrent(sessionId, session)) return;
       try {
-        response = await ctx.modelRegistry.complete(model, context, {
-          signal,
-          timeoutMs: EXTRACTION_TIMEOUT_MS,
-          sessionId: `memory-extract:${randomUUID()}`,
-          maxTokens: EXTRACTION_MAX_TOKENS,
-          maxRetries: 0,
-        });
+        const runtimeResult = await getGlobalRuntime();
+        if (!runtimeResult.ok || ctx.signal?.aborted || !isSessionStateCurrent(sessionId, session)) return;
+        await maybeRunAutomaticMaintenance(runtimeResult.runtime, ctx.signal);
       } catch {
+        // Fail open: maintenance must never break normal Pi operation.
+      }
+    })();
+  };
+
+  const snapshot = claimPendingExtractionSnapshot(sessionId);
+  if (!snapshot || session.memoryOff) {
+    if (!session.memoryOff) {
+      await enqueueSessionExtraction(sessionId, async () => {
+        scheduleMaintenance();
+      });
+    }
+    return;
+  }
+  const model = ctx.model;
+  if (!model) {
+    await enqueueSessionExtraction(sessionId, async () => {
+      scheduleMaintenance();
+    });
+    return;
+  }
+  await enqueueSessionExtraction(sessionId, async () => {
+    try {
+      if (ctx.signal?.aborted || !isSessionStateCurrent(sessionId, session) || session.memoryOff) return;
+      const material = snapshot.material;
+      if (material.trim().length < MIN_MATERIAL_CHARS) return;
+
+      const runtimeResult = await getGlobalRuntime();
+      if (!runtimeResult.ok || ctx.signal?.aborted || !isSessionStateCurrent(sessionId, session) || session.memoryOff) {
+        return;
+      }
+      const { runtime } = runtimeResult;
+      runtime.repos.candidates.sweepExpired();
+
+      const projectBank = await resolveProjectBank(ctx.cwd);
+      if (ctx.signal?.aborted || !isSessionStateCurrent(sessionId, session)) return;
+      const controller = new AbortController();
+      session.extractionController = controller;
+      const timeoutSignal = AbortSignal.timeout(EXTRACTION_TIMEOUT_MS);
+      const signal = ctx.signal
+        ? AbortSignal.any([controller.signal, ctx.signal, timeoutSignal])
+        : AbortSignal.any([controller.signal, timeoutSignal]);
+
+      try {
+        const context: Context = {
+          systemPrompt: buildExtractionSystemPrompt(projectBank.enabled),
+          messages: [
+            { role: "user", content: truncateUnicode(material, MAX_MATERIAL_CHARS), timestamp: Date.now() },
+          ],
+        };
+
+        let response: AssistantMessage;
+        try {
+          response = await ctx.modelRegistry.complete(model, context, {
+            signal,
+            timeoutMs: EXTRACTION_TIMEOUT_MS,
+            sessionId: `memory-extract:${randomUUID()}`,
+            maxTokens: EXTRACTION_MAX_TOKENS,
+            maxRetries: 0,
+          });
+        } catch {
+          if (signal.aborted || !isSessionStateCurrent(sessionId, session)) return;
+          runtime.repos.usage.record({
+            modelId: null,
+            inputTokens: null,
+            outputTokens: null,
+            costUsd: null,
+            outcome: "call_failed",
+          });
+          runtime.repos.audit.record({ eventType: "extraction", outcome: "call_failed" });
+          return;
+        }
+
         if (signal.aborted || !isSessionStateCurrent(sessionId, session)) return;
         runtime.repos.usage.record({
-          modelId: null,
-          inputTokens: null,
-          outputTokens: null,
-          costUsd: null,
-          outcome: "call_failed",
+          modelId: `${response.provider}/${response.model}`,
+          inputTokens: response.usage.input,
+          outputTokens: response.usage.output,
+          costUsd: response.usage.cost.total,
+          outcome: response.stopReason,
         });
-        runtime.repos.audit.record({ eventType: "extraction", outcome: "call_failed" });
-        return;
-      }
-
-      if (signal.aborted || !isSessionStateCurrent(sessionId, session)) return;
-      runtime.repos.usage.record({
-        modelId: `${response.provider}/${response.model}`,
-        inputTokens: response.usage.input,
-        outputTokens: response.usage.output,
-        costUsd: response.usage.cost.total,
-        outcome: response.stopReason,
-      });
-      if (response.stopReason !== "stop") {
-        runtime.repos.audit.record({ eventType: "extraction", outcome: `stop_reason:${response.stopReason}` });
-        return;
-      }
-      if (response.content.some((part) => part.type !== "text")) {
-        runtime.repos.audit.record({ eventType: "extraction", outcome: "invalid_response", redactedCode: "non_text_part" });
-        return;
-      }
-
-      const text = response.content
-        .filter((part): part is { type: "text"; text: string } => part.type === "text")
-        .map((part) => part.text)
-        .join("");
-      const parsed = parseExtractionResponse(text, { projectEnabled: projectBank.enabled });
-      if (!parsed.ok) {
-        runtime.repos.audit.record({ eventType: "extraction", outcome: "invalid_response", redactedCode: "parse_error" });
-        return;
-      }
-
-      const sourceRef = truncateUnicode(`turn:${snapshot.turnIndex}`, SOURCE_REF_MAX_LENGTH);
-      const seen = new Set<string>();
-      const rows = parsed.candidates.filter((candidate) => {
-        const projectIdentity = candidate.scope === "project" && projectBank.enabled ? projectBank.identity : null;
-        const key = `${candidate.scope}\u0000${projectIdentity ?? ""}\u0000${candidate.memoryType}\u0000${normalizedCandidateHash(candidate.text)}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        if (runtime.repos.memories.findActiveByTextHash(candidate.scope, projectIdentity, candidate.memoryType, normalizedCandidateHash(candidate.text))) {
-          return false;
+        if (response.stopReason !== "stop") {
+          runtime.repos.audit.record({ eventType: "extraction", outcome: `stop_reason:${response.stopReason}` });
+          return;
         }
-        return !runtime.repos
-          .candidates
-          .listPending()
-          .some(
+        if (response.content.some((part) => part.type !== "text")) {
+          runtime.repos.audit.record({
+            eventType: "extraction",
+            outcome: "invalid_response",
+            redactedCode: "non_text_part",
+          });
+          return;
+        }
+
+        const text = response.content
+          .filter((part): part is { type: "text"; text: string } => part.type === "text")
+          .map((part) => part.text)
+          .join("");
+        const parsed = parseExtractionResponse(text, { projectEnabled: projectBank.enabled });
+        if (!parsed.ok) {
+          runtime.repos.audit.record({
+            eventType: "extraction",
+            outcome: "invalid_response",
+            redactedCode: "parse_error",
+          });
+          return;
+        }
+
+        const sourceRef = truncateUnicode(`turn:${snapshot.turnIndex}`, SOURCE_REF_MAX_LENGTH);
+        const seen = new Set<string>();
+        const rows = parsed.candidates.filter((candidate) => {
+          const projectIdentity = candidate.scope === "project" && projectBank.enabled ? projectBank.identity : null;
+          const key = `${candidate.scope}\u0000${projectIdentity ?? ""}\u0000${candidate.memoryType}\u0000${normalizedCandidateHash(candidate.text)}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          if (
+            runtime.repos.memories.findActiveByTextHash(
+              candidate.scope,
+              projectIdentity,
+              candidate.memoryType,
+              normalizedCandidateHash(candidate.text),
+            )
+          ) {
+            return false;
+          }
+          return !runtime.repos.candidates.listPending().some(
             (existing) =>
               existing.scope === candidate.scope &&
               existing.memory_type === candidate.memoryType &&
               existing.project_identity === projectIdentity &&
+              existing.text != null &&
               normalizedCandidateHash(existing.text) === normalizedCandidateHash(candidate.text),
           );
-      });
+        });
 
-      if (rows.length === 0) {
-        runtime.repos.audit.record({ eventType: "extraction", outcome: "no_candidates" });
-        return;
-      }
-
-      if (signal.aborted || !isSessionStateCurrent(sessionId, session)) return;
-
-      runtime.db.transaction(() => {
-        for (const candidate of rows) {
-          const projectIdentity = candidate.scope === "project" && projectBank.enabled ? projectBank.identity : null;
-          const row = runtime.repos.candidates.create({
-            scope: candidate.scope,
-            memoryType: candidate.memoryType,
-            text: candidate.text,
-            evidenceSummary: candidate.evidence,
-            sourceSessionId: sessionId,
-            sourceRef,
-            proposedAction: "create",
-            targetMemoryId: null,
-            projectIdentity,
-          });
-          runtime.repos.audit.record({ eventType: "extraction", candidateId: row.id, outcome: "candidate_created" });
+        if (rows.length === 0) {
+          runtime.repos.audit.record({ eventType: "extraction", outcome: "no_candidates" });
+          return;
         }
-      });
 
-      if (!signal.aborted && isSessionStateCurrent(sessionId, session)) {
-        try {
-          const language = normalizeLanguage(runtime.profile.language);
-          ctx.ui.notify(t(language, "extract.done", { count: rows.length }), "info");
-        } catch {
-          // Notification failures must not affect persistence.
+        if (signal.aborted || !isSessionStateCurrent(sessionId, session)) return;
+
+        runtime.db.transaction(() => {
+          for (const candidate of rows) {
+            const projectIdentity = candidate.scope === "project" && projectBank.enabled ? projectBank.identity : null;
+            const row = runtime.repos.candidates.create({
+              scope: candidate.scope,
+              memoryType: candidate.memoryType,
+              text: candidate.text,
+              evidenceSummary: candidate.evidence,
+              sourceSessionId: sessionId,
+              sourceRef,
+              proposedAction: "create",
+              targetMemoryId: null,
+              projectIdentity,
+            });
+            runtime.repos.audit.record({
+              eventType: "extraction",
+              candidateId: row.id,
+              outcome: "candidate_created",
+            });
+          }
+        });
+
+        if (!signal.aborted && isSessionStateCurrent(sessionId, session)) {
+          try {
+            const language = normalizeLanguage(runtime.profile.language);
+            ctx.ui.notify(t(language, "extract.done", { count: rows.length }), "info");
+          } catch {
+            // Notification failures must not affect persistence.
+          }
         }
+      } finally {
+        if (session.extractionController === controller) {
+          session.extractionController = null;
+        }
+        controller.abort();
       }
     } finally {
-      if (session.extractionController === controller) {
-        session.extractionController = null;
-      }
-      controller.abort();
+      scheduleMaintenance();
     }
   });
 }

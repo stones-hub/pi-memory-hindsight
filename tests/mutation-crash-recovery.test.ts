@@ -5,6 +5,7 @@ import { ProfileRepository } from "../src/db/profile-repository.js";
 import { MemoriesRepository } from "../src/db/memories-repository.js";
 import { CandidatesRepository } from "../src/db/candidates-repository.js";
 import { OperationsRepository } from "../src/db/operations-repository.js";
+import { MaintenanceRepository } from "../src/db/maintenance-repository.js";
 import { AuditRepository, ConflictsRepository, UsageRepository } from "../src/db/audit-conflicts-usage-repository.js";
 import { profileBankId } from "../src/identity/bank-id.js";
 import { buildOwnedDocumentId } from "../src/provider/validation.js";
@@ -57,6 +58,7 @@ function makeRuntime() {
       conflicts: new ConflictsRepository(db),
       audit: new AuditRepository(db),
       usage: new UsageRepository(db),
+      maintenance: new MaintenanceRepository(db),
     },
   };
 }

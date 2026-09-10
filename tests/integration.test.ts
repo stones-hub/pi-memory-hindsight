@@ -4,9 +4,11 @@ import { AuditRepository, ConflictsRepository, UsageRepository } from "../src/db
 import { CandidatesRepository } from "../src/db/candidates-repository.js";
 import { MemoriesRepository } from "../src/db/memories-repository.js";
 import { OperationsRepository } from "../src/db/operations-repository.js";
+import { MaintenanceRepository } from "../src/db/maintenance-repository.js";
 import { ProfileRepository } from "../src/db/profile-repository.js";
 import { profileBankId, projectBankId } from "../src/identity/bank-id.js";
 import { forgetMemory } from "../src/governance/forget-service.js";
+import { projectForgetCtx } from "./forget-test-context.js";
 import { remember } from "../src/governance/remember-service.js";
 import { replaceMemory } from "../src/governance/replace-service.js";
 import { handleBeforeAgentStart } from "../src/recall/recall-service.js";
@@ -67,6 +69,7 @@ async function makeRuntime(apiKey?: string) {
         conflicts: new ConflictsRepository(db),
         audit: new AuditRepository(db),
         usage: new UsageRepository(db),
+        maintenance: new MaintenanceRepository(db),
       },
     },
   };
@@ -363,6 +366,7 @@ describe("integration with real sqlite + adapter + mock hindsight", () => {
         conflicts: new ConflictsRepository(db),
         audit: new AuditRepository(db),
         usage: new UsageRepository(db),
+        maintenance: new MaintenanceRepository(db),
       },
     };
 
@@ -479,7 +483,9 @@ describe("handleBeforeAgentStart with real sqlite + real adapter + mock hindsigh
     expect(appendEntry).not.toHaveBeenCalled();
 
     const memoryId = runtime.repos.memories.listActive("project", projectIdentity)[0]!.id;
-    await expect(forgetMemory(runtime as any, memoryId)).resolves.toEqual({ outcome: "forgotten" });
+    await expect(forgetMemory(runtime as any, memoryId, projectForgetCtx(projectIdentity))).resolves.toEqual({
+      outcome: "forgotten",
+    });
 
     noteTurnStart(sessionId, { type: "turn_start", turnIndex: 2, timestamp: Date.now() });
     const result2 = await handleBeforeAgentStart(

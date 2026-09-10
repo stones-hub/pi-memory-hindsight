@@ -15,10 +15,23 @@ import { remember, textHashOf } from "../governance/remember-service.js";
 import { forgetMemory } from "../governance/forget-service.js";
 import { reflectMemory } from "../governance/reflect-service.js";
 import { replaceMemory } from "../governance/replace-service.js";
+import {
+  listMemories,
+  renderMemoryListItem,
+  renderMemoryShow,
+  showMemory,
+} from "../governance/discovery-service.js";
+import {
+  getCleanupStatus,
+  renderCleanupResult,
+  renderCleanupStatus,
+  runMaintenancePass,
+} from "../governance/cleanup-service.js";
 import type { MemoryType, Scope } from "../db/types.js";
 import { parseMemoryCommand } from "./memory-command-parser.js";
 import { createCandidateReviewer } from "../ui/candidate-reviewer.js";
 import { resolveProjectBank } from "../runtime/project-runtime.js";
+import { mutationNowMs } from "../governance/mutation-clock.js";
 
 function candidateOutcomeMessage(
   language: Language,
@@ -31,7 +44,7 @@ function candidateOutcomeMessage(
 ): string {
   switch (result.outcome) {
     case "approved":
-      return t(language, "candidates.approved");
+      return t(language, "candidates.approved", { id: result.memoryId });
     case "already_decided":
       return t(language, "candidates.claim_failed");
     case "not_found":
@@ -49,9 +62,14 @@ function rememberOutcomeMessage(
 ): string {
   switch (result.outcome) {
     case "written":
-      return t(language, "remember.written", { scope: parsed.scope, type: parsed.memoryType, text: parsed.content.trim() });
+      return t(language, "remember.written", {
+        scope: parsed.scope,
+        type: parsed.memoryType,
+        text: parsed.content.trim(),
+        id: result.memoryId,
+      });
     case "duplicate":
-      return t(language, "remember.duplicate", { text: parsed.content.trim() });
+      return t(language, "remember.duplicate", { text: parsed.content.trim(), id: result.memoryId });
     case "rejected":
     case "conflict":
     case "unknown":
@@ -190,9 +208,123 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
           if (!last) return void ctx.ui.notify(t(language, "memory.last.none"), "info");
           const text = [
             t(language, "memory.last.header", { count: last.items.length, when: last.injectedAt }),
-            ...last.items.map((item) => `- [${item.scope}/${item.memoryType}] ${item.text}`),
+            ...last.items.map((item) =>
+              item.readOnlyShared || !item.memoryId
+                ? t(language, "memory.last.item.shared", {
+                    scope: item.scope,
+                    type: item.memoryType,
+                    text: item.text,
+                  })
+                : t(language, "memory.last.item", {
+                    id: item.memoryId,
+                    scope: item.scope,
+                    type: item.memoryType,
+                    text: item.text,
+                  }),
+            ),
           ].join("\n");
           ctx.ui.notify(text, "info");
+          return;
+        }
+        case "list": {
+          const providerRuntime = await getGlobalRuntime();
+          if (!providerRuntime.ok) {
+            ctx.ui.notify(t(language, "memory.status.unavailable"), "error");
+            return;
+          }
+          let projectIdentity: string | null = null;
+          try {
+            const project = await resolveProjectBank(ctx.cwd);
+            projectIdentity = project.enabled ? project.identity : null;
+          } catch {
+            projectIdentity = null;
+          }
+          if (parsed.filter === "project" && !projectIdentity) {
+            ctx.ui.notify(t(language, "memory.list.none"), "info");
+            return;
+          }
+          const items = await listMemories(providerRuntime.runtime, {
+            filter: parsed.filter,
+            projectIdentity,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+          ctx.ui.notify(
+            items.length
+              ? [t(language, "memory.list.header", { count: items.length }), ...items.map(renderMemoryListItem)].join(
+                  "\n",
+                )
+              : t(language, "memory.list.none"),
+            "info",
+          );
+          return;
+        }
+        case "show": {
+          const providerRuntime = await getGlobalRuntime();
+          if (!providerRuntime.ok) {
+            ctx.ui.notify(t(language, "memory.status.unavailable"), "error");
+            return;
+          }
+          const projectBank = await resolveProjectBank(ctx.cwd);
+          const shown = await showMemory(providerRuntime.runtime, parsed.id, {
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+            expectedProjectIdentity: projectBank.enabled ? projectBank.identity : null,
+            projectScopeEnabled: projectBank.enabled,
+          });
+          if ("outcome" in shown && shown.outcome === "not_found") {
+            ctx.ui.notify(t(language, "memory.show.not_found", { id: parsed.id }), "error");
+            return;
+          }
+          if ("outcome" in shown && shown.outcome === "rejected") {
+            ctx.ui.notify(shown.reason, "error");
+            return;
+          }
+          ctx.ui.notify(renderMemoryShow(shown as Exclude<typeof shown, { outcome: string }>), "info");
+          return;
+        }
+        case "cleanup-status": {
+          const status = getCleanupStatus(localRuntime);
+          ctx.ui.notify(
+            `${t(language, "memory.cleanup.status.header")}\n${renderCleanupStatus(status)}`,
+            "info",
+          );
+          return;
+        }
+        case "cleanup-now": {
+          const confirmed = await ctx.ui.confirm(
+            t(language, "memory.cleanup.confirm_title"),
+            t(language, "memory.cleanup.confirm_body"),
+          );
+          if (!confirmed) {
+            ctx.ui.notify(t(language, "memory.cleanup.skipped", { reason: "cancelled" }), "info");
+            return;
+          }
+          const providerRuntime = await getGlobalRuntime();
+          if (!providerRuntime.ok) {
+            ctx.ui.notify(t(language, "memory.status.unavailable"), "error");
+            return;
+          }
+          const result = await runMaintenancePass(providerRuntime.runtime, {
+            force: true,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+          if (!result.ran) {
+            ctx.ui.notify(t(language, "memory.cleanup.skipped", { reason: result.reason ?? "unknown" }), "error");
+            return;
+          }
+          if (result.incomplete) {
+            ctx.ui.notify(
+              t(language, "memory.cleanup.incomplete", {
+                reason: result.reason ?? result.incomplete,
+                detail: renderCleanupResult(result.counts!),
+              }),
+              "error",
+            );
+            return;
+          }
+          ctx.ui.notify(
+            t(language, "memory.cleanup.done", { detail: renderCleanupResult(result.counts!) }),
+            "info",
+          );
           return;
         }
         case "language":
@@ -217,8 +349,14 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
         }
         case "candidates-reject":
           {
-            const ok = rejectCandidate(localRuntime, parsed.id);
-            ctx.ui.notify(ok ? t(language, "candidates.rejected") : t(language, "candidates.claim_failed"), ok ? "info" : "error");
+            const rejected = rejectCandidate(localRuntime, parsed.id);
+            if (rejected.ok) {
+              ctx.ui.notify(t(language, "candidates.rejected"), "info");
+            } else if (rejected.reason === "not_rejectable") {
+              ctx.ui.notify(t(language, "candidates.reject_not_rejectable"), "error");
+            } else {
+              ctx.ui.notify(t(language, "candidates.claim_failed"), "error");
+            }
           }
           return;
         case "remember": {
@@ -255,6 +393,13 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
               t(language, "update.rejected", {
                 reason: target ? `target memory is not active (status: ${target.status})` : "target memory was not found",
               }),
+              "error",
+            );
+            return;
+          }
+          if (target.expires_at && Date.parse(target.expires_at) <= mutationNowMs()) {
+            ctx.ui.notify(
+              t(language, "update.rejected", { reason: "target memory is past its expiry and cannot be updated" }),
               "error",
             );
             return;
@@ -316,7 +461,12 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
             ctx.ui.notify(t(language, "memory.status.unavailable"), "error");
             return;
           }
-          const result = await forgetMemory(providerRuntime.runtime, parsed.id, ctx.signal);
+          const projectBank = await resolveProjectBank(ctx.cwd);
+          const result = await forgetMemory(providerRuntime.runtime, parsed.id, {
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+            projectIdentity: projectBank.enabled ? projectBank.identity : null,
+            projectScopeEnabled: projectBank.enabled,
+          });
           ctx.ui.notify(
             result.outcome === "forgotten" ? t(language, "forget.done", { id: parsed.id }) : t(language, "forget.failed", { id: parsed.id, reason: result.reason }),
             result.outcome === "forgotten" ? "info" : "error",
@@ -334,9 +484,6 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
           else if (result.outcome === "rejected") ctx.ui.notify(result.reason, "error");
           return;
         }
-        case "extract":
-          ctx.ui.notify(t(language, "extract.unsupported"), "info");
-          return;
         }
       } catch {
         try {

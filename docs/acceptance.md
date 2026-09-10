@@ -1,12 +1,23 @@
 # Acceptance Plan
 
-Status: Slice 5 implementation landed. `npm run acceptance:pi` passes with every required evidence boolean `true` and `pending` empty. The gated disposable live-Hindsight contract runner (`npm run acceptance:hindsight:live`) is implemented, unit-tested against a mock Hindsight server, and honestly reports its one permanent gap (no reliable bank-absence endpoint), but has not been executed against a real Hindsight instance.
+Status: Slice 5 plus retention/discovery follow-up was **accepted** by Pi (2026-09-09) on baseline `4fce7f1ef466cece83de34579b51df6f34c2e1c1`, but a subsequent **real-profile smoke** exposed that Hindsight 0.8.3 returns governance metadata on `document_metadata` (document GET) while list units use `metadata: null`. Prior PASS hashes below are **invalidated** by the `document_metadata` discovery fix (Cursor chat `93f0fce7-e569-4b4c-ac14-934a2ef1a61e`). A temporary smoke memory was physically forgotten and proven absent; existing user memory was untouched. **Pi must rerun** offline tests, packaged `acceptance:pi`, and live-profile smoke before any new acceptance claim. **Commit authorization has not been granted.** **Pi settings/config were not modified** in this fix; the user's Pi package registration may still load candidate `dist/` from this repository.
+
+## Evidence layers (do not conflate)
+
+| Layer | Who runs it | What it proves | Final evidence (2026-09-09) |
+|---|---|---|---|
+| Agent/executor self-report | Coding agent during implementation | Implementation intent only; not acceptance by itself. | Chat `93f0fce7-e569-4b4c-ac14-934a2ef1a61e` |
+| Pi independent offline checks | Pi reviewer | `npm test`, typecheck, build, pack dry-run, audit, diff/NUL on uncommitted tree. | **15 files / 269 tests**; audit **0** vulns; NUL clean; pack dry-run **224 files**, SHA-256 `e218c607…1d40b` |
+| Packaged Pi offline acceptance | Pi reviewer (`npm run acceptance:pi`) | Packed tarball in isolated temp dirs with mock Hindsight; **19** required booleans `true`. | `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `e92a9960…f539a9` |
+| Disposable live Hindsight contract | Pi reviewer (`npm run acceptance:hindsight:live`) | One nonce-derived bank only; never list Banks. | `/tmp/pi-memory-hindsight-acceptance-hindsight-live.json`, SHA-256 `c9408a9f…d78ca` |
+| Final read-only review | Pi reviewer | Architecture/policy/safety verdict. | **PASS**; chat `c06e5d55-4faa-4dd6-b211-99e75977423a`; SHA-256 `18b7b47f…9c1ff` |
+| Live Pi TUI against user profile | User | Not run in this follow-up. | Settings/config unchanged; local package registration may load candidate `dist/` |
 
 ## Automated coverage matrix
 
 | Layer | Runner | Default | Current evidence |
 |---|---|---:|---|
-| Unit/integration | `npm test` | Yes | 117 tests across 11 files. Covers SQLite, provider adapter, lifecycle, governance commands/tools, response parsing, security filters, Slice 5 acceptance/live-gate helpers, mock-Hindsight-backed integration (including `handleBeforeAgentStart` exercised against a real `HindsightAdapter` and real SQLite, for both Profile and shared-Project scope), and the live-runner's retain/recall/replace/cleanup flow against a mock server. |
+| Unit/integration | `npm test` | Yes | **269 tests** across **15 files** (Pi final, 2026-09-09). Covers SQLite v1–v7 migrations, provider adapter, lifecycle, governance commands/tools, retention/discovery/expiry cleanup, response parsing, security filters, Slice 5 acceptance/live-gate helpers, mock-Hindsight-backed integration, and the live-runner's retain/recall/replace/cleanup flow against a mock server. |
 | Type safety | `npm run typecheck` | Yes | Must pass before packing. |
 | Package build | `npm run build`, `npm pack --dry-run` | Yes | Verifies packed extension entrypoint and included files. |
 | Packaged Pi offline acceptance | `npm run acceptance:pi` | Opt-in but offline-safe | Uses packed tarball contents in isolated temp dirs, loopback mock Hindsight, fake local provider, real `pi` subprocesses, hard timeouts, and cleanup. Hard-fails unless every required evidence boolean is `true` and `pending` is empty. Writes redacted evidence to `/tmp/pi-memory-hindsight-acceptance-pi.json`. |
@@ -14,20 +25,37 @@ Status: Slice 5 implementation landed. `npm run acceptance:pi` passes with every
 
 ## Current packaged offline evidence
 
-From `/tmp/pi-memory-hindsight-acceptance-pi.json`, the isolated runner proves, with every required boolean `true` and `pending` empty:
+**Final (2026-09-09):** `/tmp/pi-memory-hindsight-acceptance-pi.json`, SHA-256 `e92a9960de7aa13747833be6aaf8c7bbee2ae7cbc239201e9372f10fb8f539a9`. All **19** required booleans `true`; `pending=[]`; isolated resources cleaned.
+
+The isolated runner proves:
 
 1. Packed tarball contents can be unpacked and loaded by real `pi` subprocesses in isolated temp dirs.
 2. The package registers the `memory` command and `memory_remember` tool.
 3. `/memory off` and `/memory on` persist per session through body-free custom Session entries.
-4. Explicit remember/update writes one owned-bank document through the mock Hindsight contract without bank enumeration. `/memory remember` creates; `/memory update <id>` and tool `action=update` replace under the existing document id.
-5. Automatic extraction creates exactly one reviewable candidate, which can be listed and rejected through the TUI and is reflected as `rejected` in SQLite.
-6. Turn-scoped recall injects exactly one relevant memory item into the system prompt for the triggering turn and creates no persisted recall message in the session's own `.jsonl` file (verified by diffing session files before/after and asserting exactly one new recall route was made).
-7. Forget deletes that document and verifies document absence plus zero units by document ID.
-8. Provider-unavailable status degrades without crashing the Pi session.
-9. Print, JSON, and RPC modes perform no automatic recall/retain and leave SQLite candidate/memory counts unchanged.
-10. The request journal proves auth was actually sent (`authPresent`) while never containing the real API key value or any remembered content.
+4. Explicit remember/update writes one owned-bank document through the mock Hindsight contract without bank enumeration. `/memory remember` creates and surfaces the logical Memory ID; `/memory update <id>` reuses the existing document id.
+5. While the memory remains active, `/memory list profile` and `/memory show <id>` surface the exact logical ID and updated bounded preview/content through exact document GET + list-by-document reads, validating `document_metadata` when list units return `metadata: null` (no bodies in evidence JSON). Packaged acceptance asserts `document_get` and `list` routes increase during discovery without extra retain/delete.
+6. `/memory cleanup status` renders maintenance status without provider mutation; confirmed `/memory cleanup now` completes and advances `maintenance_state.last_success_at` while leaving the active remembered row intact.
+7. Automatic extraction creates exactly one reviewable candidate, which can be listed and rejected through the TUI and is reflected as `rejected` in SQLite.
+8. Turn-scoped recall injects exactly one relevant memory item into the system prompt for the triggering turn and creates no persisted recall message in the session's own `.jsonl` file (verified by diffing session files before/after and asserting exactly one new recall route was made).
+9. Forget deletes that document and verifies document absence plus zero units by document ID.
+10. Provider-unavailable status degrades without crashing the Pi session.
+11. Print, JSON, and RPC modes perform no automatic recall/retain and leave SQLite candidate/memory counts unchanged.
+12. The request journal proves auth was actually sent (`authPresent`) while never containing the real API key value or any remembered content.
+
+Required evidence booleans include: `memoryIdSurfaced`, `memoryListShowWorked`, `cleanupStatusWorked`, and `cleanupNowWorked`, in addition to the Slice 5 booleans.
 
 There is no remaining packaged-acceptance gap; `npm run acceptance:pi` hard-fails (`ensureRequiredSuccess`) if any of the above cannot be proven.
+
+**Final live Hindsight evidence (2026-09-09):** `/tmp/pi-memory-hindsight-acceptance-hindsight-live.json`, SHA-256 `c9408a9f52699a3ffe6190a82208d76245872ef9b14278118c682dc901ed78ca`. Disposable Bank `pi-memory-hindsight:project:c9cd8e6c67fc9c322f4047e9186d1d42`, nonce `retention-final3-20260909141012-929ffb6a`, `cleanupOperationallyComplete=true`.
+
+**Historical (pre-retention follow-up):** prior packaged Pi SHA-256 `0ea2e7c5…d92acd`; prior live SHA-256 `468baf1b…073070`. Do not treat as current.
+
+## Non-blocking residuals (final review)
+
+- Maintenance must run to physically delete expired documents.
+- No automatic `VACUUM` or promised SQLite file shrink.
+- Post-migration cleanup failure path lacks a dedicated test.
+- Standalone Pi `node:sqlite` compatibility and remote embedding locality remain environment/operator concerns.
 
 
 ## Functional acceptance
@@ -46,7 +74,7 @@ There is no remaining packaged-acceptance gap; `npm run acceptance:pi` hard-fail
 12. TUI supports bilingual review, edit, approve, reject, filters, and evidence detail.
 13. `/memory off` persists per Session without affecting other windows; `/memory on` restores it.
 14. Print, JSON, and RPC modes perform no automatic memory behavior.
-15. Physical forget deletes the target's dedicated Hindsight document, verifies post-delete absence, removes it from future recall, and stores no body in local audit.
+15. Physical forget deletes the target's dedicated Hindsight document, verifies post-delete absence, removes it from future recall, and stores no body in local audit. Project forget requires the currently enabled cwd project identity.
 16. Recall injection changes only the current turn's system prompt and creates no recall message in the Session file.
 17. An approved atomic candidate produces exactly one exact-text Hindsight source unit without Hindsight generative extraction or observation consolidation.
 18. Repeating an ambiguous write under the same logical ID reconciles through the same document ID and creates no duplicate document.

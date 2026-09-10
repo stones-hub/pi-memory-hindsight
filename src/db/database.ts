@@ -9,6 +9,7 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { MIGRATIONS } from "./migrations.js";
+import { CandidatesRepository } from "./candidates-repository.js";
 import { buildLegacyOwnedDocumentId } from "../provider/validation.js";
 import type { Scope } from "./types.js";
 
@@ -61,6 +62,12 @@ export class MemoryDatabase {
       raw.close();
       return { ok: false, reason: `migration failed: ${String(err)}` };
     }
+    try {
+      instance.runPostMigrationMaintenance();
+    } catch (err) {
+      raw.close();
+      return { ok: false, reason: `post-migration cleanup failed: ${String(err)}` };
+    }
     return { ok: true, db: instance };
   }
 
@@ -71,6 +78,7 @@ export class MemoryDatabase {
     raw.exec("PRAGMA foreign_keys = ON");
     const instance = new MemoryDatabase(raw);
     instance.migrate();
+    instance.runPostMigrationMaintenance();
     return instance;
   }
 
@@ -81,17 +89,63 @@ export class MemoryDatabase {
       (a, b) => a.version - b.version,
     );
     for (const migration of pending) {
-      this.db.exec("BEGIN IMMEDIATE");
+      // v7 rebuilds memories and dependents; SQLite forbids toggling foreign_keys
+      // inside a transaction, so disable enforcement only around that rebuild.
+      const disableForeignKeys = migration.version === 7;
+      let foreignKeysWereDisabled = false;
       try {
-        this.db.exec(migration.sql);
-        this.db.exec(`PRAGMA user_version = ${migration.version}`);
-        this.db.exec("COMMIT");
-      } catch (err) {
-        this.db.exec("ROLLBACK");
-        throw err;
+        if (disableForeignKeys) {
+          this.db.exec("PRAGMA foreign_keys = OFF");
+          foreignKeysWereDisabled = true;
+        }
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+          this.db.exec(migration.sql);
+          if (disableForeignKeys) {
+            const fkViolations = this.db.prepare("PRAGMA foreign_key_check").all();
+            if (fkViolations.length > 0) {
+              throw new Error(
+                `migration v${migration.version} would leave ${fkViolations.length} foreign key violation(s)`,
+              );
+            }
+          }
+          this.db.exec(`PRAGMA user_version = ${migration.version}`);
+          this.db.exec("COMMIT");
+        } catch (err) {
+          try {
+            this.db.exec("ROLLBACK");
+          } catch {
+            // prefer original migration error
+          }
+          throw err;
+        }
+      } finally {
+        if (foreignKeysWereDisabled) {
+          this.db.exec("PRAGMA foreign_keys = ON");
+          const foreignKeys = (
+            this.db.prepare("PRAGMA foreign_keys").get() as { foreign_keys: number }
+          ).foreign_keys;
+          if (foreignKeys !== 1) {
+            throw new Error(`failed to re-enable foreign keys after migration v${migration.version}`);
+          }
+        }
       }
     }
     this.backfillLegacyDocumentKeys();
+  }
+
+  /** Post-migration local maintenance separate from schema migration failures. */
+  runPostMigrationMaintenance(): void {
+    this.purgeLegacyTerminalCandidateBodies();
+  }
+
+  /** Upgrade/open purge for pre-v7 terminal candidate bodies; bounded chunks until complete. */
+  private purgeLegacyTerminalCandidateBodies(): void {
+    const candidates = new CandidatesRepository(this);
+    for (;;) {
+      const purged = this.transaction(() => candidates.purgeLingeringTerminalBodies(500));
+      if (purged === 0) break;
+    }
   }
 
   /**

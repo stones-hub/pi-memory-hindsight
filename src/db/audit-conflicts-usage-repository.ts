@@ -40,6 +40,21 @@ export class ConflictsRepository {
       .get(memoryId) as { present: number } | undefined;
     return row?.present === 1;
   }
+
+  deleteResolvedOlderThan(cutoffIso: string, limit: number): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM conflicts
+         WHERE id IN (
+           SELECT id FROM conflicts
+           WHERE resolution_state != 'open' AND updated_at < ?
+           ORDER BY updated_at ASC
+           LIMIT ?
+         )`,
+      )
+      .run(cutoffIso, limit);
+    return Number(result.changes);
+  }
 }
 
 /** Body-free audit log: event type, IDs, outcome, and a redacted code only. */
@@ -78,6 +93,33 @@ export class AuditRepository {
       .prepare("SELECT * FROM audit_events ORDER BY created_at DESC LIMIT ?")
       .all(limit) as unknown as AuditEventRow[];
   }
+
+  deleteOlderThan(cutoffIso: string, limit: number): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM audit_events
+         WHERE id IN (
+           SELECT id FROM audit_events WHERE created_at < ? ORDER BY created_at ASC LIMIT ?
+         )`,
+      )
+      .run(cutoffIso, limit);
+    return Number(result.changes);
+  }
+
+  deleteOverflowBeyond(maxRows: number, limit: number): number {
+    const countRow = this.db.prepare("SELECT COUNT(*) AS n FROM audit_events").get() as { n: number };
+    const overflow = Number(countRow.n) - maxRows;
+    if (overflow <= 0) return 0;
+    const result = this.db
+      .prepare(
+        `DELETE FROM audit_events
+         WHERE id IN (
+           SELECT id FROM audit_events ORDER BY created_at ASC LIMIT ?
+         )`,
+      )
+      .run(Math.min(overflow, limit));
+    return Number(result.changes);
+  }
 }
 
 /** Independent-extraction token/cost accounting without any prompt/response bodies. */
@@ -113,5 +155,32 @@ export class UsageRepository {
     return this.db
       .prepare("SELECT * FROM usage_events ORDER BY created_at DESC LIMIT ?")
       .all(limit) as unknown as UsageEventRow[];
+  }
+
+  deleteOlderThan(cutoffIso: string, limit: number): number {
+    const result = this.db
+      .prepare(
+        `DELETE FROM usage_events
+         WHERE id IN (
+           SELECT id FROM usage_events WHERE created_at < ? ORDER BY created_at ASC LIMIT ?
+         )`,
+      )
+      .run(cutoffIso, limit);
+    return Number(result.changes);
+  }
+
+  deleteOverflowBeyond(maxRows: number, limit: number): number {
+    const countRow = this.db.prepare("SELECT COUNT(*) AS n FROM usage_events").get() as { n: number };
+    const overflow = Number(countRow.n) - maxRows;
+    if (overflow <= 0) return 0;
+    const result = this.db
+      .prepare(
+        `DELETE FROM usage_events
+         WHERE id IN (
+           SELECT id FROM usage_events ORDER BY created_at ASC LIMIT ?
+         )`,
+      )
+      .run(Math.min(overflow, limit));
+    return Number(result.changes);
   }
 }

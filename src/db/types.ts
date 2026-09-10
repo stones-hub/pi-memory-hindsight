@@ -29,7 +29,7 @@ export type CandidateState =
   | "expired"
   | "failed"
   | "reconciling";
-export type MemoryStatus = "active" | "superseded" | "deleted" | "reconciling";
+export type MemoryStatus = "active" | "superseded" | "deleted" | "reconciling" | "expired";
 export type VerificationState = "verified" | "unverified";
 export type OperationAction = "create" | "replace" | "delete";
 export type OperationState = "pending" | "in_progress" | "committed" | "failed" | "reconciling";
@@ -46,6 +46,15 @@ export interface ProfileRow {
   anonymous_profile_id: string;
   language: string;
   created_at: string;
+  updated_at: string;
+}
+
+export interface MaintenanceStateRow {
+  id: 1;
+  last_success_at: string | null;
+  lease_owner: string | null;
+  lease_until: string | null;
+  last_status_json: string | null;
   updated_at: string;
 }
 
@@ -96,7 +105,8 @@ export interface CandidateRow {
   id: string;
   scope: Scope;
   memory_type: MemoryType;
-  text: string;
+  /** Null after terminal body purge. */
+  text: string | null;
   evidence_summary: string | null;
   source_session_id: string | null;
   source_ref: string | null;
@@ -110,6 +120,9 @@ export interface CandidateRow {
   expires_at: string;
   approved_memory_id: string | null;
   failure_code: string | null;
+  /** SHA-256 of trimmed body retained after purge; null while body is present. */
+  text_hash: string | null;
+  body_purged_at: string | null;
 }
 
 export interface OperationRow {

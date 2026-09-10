@@ -84,6 +84,30 @@ function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
 }
 
+function contentHash(text: string): string {
+  return createHash("sha256").update(text.trim()).digest("hex");
+}
+
+function buildDocumentGetBody(bankId: string, documentId: string, units: MemoryUnit[]): Record<string, unknown> {
+  const unit = units[0]!;
+  const originalText = unit.text;
+  const internalNow = new Date().toISOString();
+  return {
+    id: documentId,
+    bank_id: bankId,
+    original_text: originalText,
+    content_hash: contentHash(originalText),
+    created_at: internalNow,
+    updated_at: internalNow,
+    memory_unit_count: units.length,
+    nodes_by_fact_type: {},
+    tags: [],
+    document_metadata: unit.metadata,
+    retain_params: {},
+    observation_scopes: {},
+  };
+}
+
 function summarizeBody(value: unknown): Record<string, unknown> | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "object" || Array.isArray(value)) {
@@ -300,13 +324,17 @@ export async function startMockHindsightServer(initialMode: MockHindsightMode = 
       const documentId = url.searchParams.get("document_id") ?? "";
       const bank = getOrCreateBank(bankId);
       const items = bank.documents.get(documentId) ?? [];
+      if (mode.malformed?.list) {
+        finish(200, "list", null);
+        return json(res, 200, { items: "not-an-array", total: 1, limit: 2, offset: 0 });
+      }
       finish(200, "list", null);
       return json(res, 200, {
         items: items.map((item) => ({
           id: item.id,
           text: item.text,
           document_id: item.documentId,
-          metadata: item.metadata,
+          metadata: null,
           state: item.state,
           type: "world",
         })),
@@ -360,8 +388,12 @@ export async function startMockHindsightServer(initialMode: MockHindsightMode = 
           finish(404, "document_get", null);
           return json(res, 404, { error: "missing" });
         }
+        if (mode.malformed?.document_get) {
+          finish(200, "document_get", null);
+          return json(res, 200, { document_id: documentId });
+        }
         finish(200, "document_get", null);
-        return json(res, 200, { document_id: documentId });
+        return json(res, 200, buildDocumentGetBody(bankId, documentId, items));
       }
 
       if (method === "DELETE") {

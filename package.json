@@ -3,11 +3,19 @@
   "version": "0.1.0",
   "description": "Governed long-term memory extension for Pi, backed by Hindsight",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stones-hub/pi-memory-hindsight.git"
+  },
+  "homepage": "https://github.com/stones-hub/pi-memory-hindsight#readme",
+  "bugs": {
+    "url": "https://github.com/stones-hub/pi-memory-hindsight/issues"
+  },
   "pi": {
     "extensions": [
-      "./dist/index.js"
+      "./src/index.ts"
     ]
   },
   "engines": {
@@ -20,28 +28,31 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist",
+    "src",
     "README.md",
-    "docs"
+    "LICENSE",
+    "docs",
+    "tsconfig.json"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "acceptance:pi": "npm run build && node scripts/acceptance-pi.mjs",
+    "acceptance:git-install": "npm run build && node scripts/git-install-acceptance.mjs",
     "acceptance:hindsight:live": "npm run build && node scripts/acceptance-hindsight-live.mjs",
     "prepack": "npm run build"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.85.1 <0.86.0"
-  },
-  "dependencies": {
-    "typebox": "1.3.7",
-    "@earendil-works/pi-ai": "0.85.1"
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*",
+    "typebox": "*"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@types/node": "22.19.19",
+    "typebox": "1.3.7",
     "typescript": "5.9.3",
     "vitest": "4.1.9"
   },
@@ -51,5 +62,8 @@
     "memory",
     "hindsight",
     "pi-package"
-  ]
+  ],
+  "allowScripts": {
+    "pi-memory-hindsight": false
+  }
 }

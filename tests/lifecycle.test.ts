@@ -10,6 +10,7 @@ import { AuditRepository, ConflictsRepository, UsageRepository } from "../src/db
 import { CandidatesRepository } from "../src/db/candidates-repository.js";
 import { MemoriesRepository } from "../src/db/memories-repository.js";
 import { OperationsRepository } from "../src/db/operations-repository.js";
+import { MaintenanceRepository } from "../src/db/maintenance-repository.js";
 import { ProfileRepository } from "../src/db/profile-repository.js";
 import { buildOwnedDocumentId, buildLegacyOwnedDocumentId } from "../src/provider/validation.js";
 import { handleAgentEnd, handleAgentSettled } from "../src/extraction/extraction-service.js";
@@ -64,6 +65,7 @@ function makeRuntime() {
       conflicts: new ConflictsRepository(db),
       audit: new AuditRepository(db),
       usage: new UsageRepository(db),
+      maintenance: new MaintenanceRepository(db),
     },
   };
   return runtime;
@@ -238,16 +240,18 @@ describe("extension entrypoint and session state", () => {
     const pkg = JSON.parse(
       await readFile(path.join(process.cwd(), "package.json"), "utf8"),
     ) as { pi: { extensions: string[] }; keywords: string[] };
-    expect(pkg.pi.extensions).toEqual(["./dist/index.js"]);
+    expect(pkg.pi.extensions).toEqual(["./src/index.ts"]);
     expect(pkg.keywords).toContain("pi-package");
 
     const packed = JSON.parse(
       execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: process.cwd(), encoding: "utf8" }),
     ) as Array<{ files: Array<{ path: string }> }>;
-    const packedPaths = new Set((packed[0]?.files ?? []).map((file) => `./${file.path}`));
+    const packedPaths = new Set((packed[0]?.files ?? []).map((file) => file.path));
     for (const extensionPath of pkg.pi.extensions) {
-      expect(packedPaths.has(extensionPath)).toBe(true);
+      expect(packedPaths.has(extensionPath.replace(/^\.\//, ""))).toBe(true);
     }
+    expect(packedPaths.has("src/index.ts")).toBe(true);
+    expect(packed[0]?.files.length ?? 0).toBeGreaterThan(0);
   });
 });
 
@@ -1347,6 +1351,40 @@ describe("settled extraction lifecycle", () => {
     await expect(handleAgentSettled({ type: "agent_settled" }, ctx as any)).rejects.toThrow("boom");
     expect(runtime.repos.candidates.listPending()).toHaveLength(0);
     expect(runtime.repos.audit.listRecent(10).filter((row) => row.outcome === "candidate_created")).toHaveLength(0);
+  });
+
+  it("does not block agent_settled on automatic maintenance", async () => {
+    const runtime = makeRuntime();
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+    let maintenanceFinished = false;
+    const maintenanceSpy = vi
+      .spyOn(await import("../src/governance/cleanup-service.js"), "maybeRunAutomaticMaintenance")
+      .mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        maintenanceFinished = true;
+      });
+    const ctx = makeContext();
+    (ctx.modelRegistry.complete as ReturnType<typeof vi.fn>).mockResolvedValue(
+      assistantText(JSON.stringify({ candidates: [] })),
+    );
+    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    handleAgentEnd(
+      {
+        type: "agent_end",
+        messages: [
+          { role: "user", content: "this is long enough to qualify as extraction material", timestamp: 1 },
+          { role: "assistant", content: [{ type: "text", text: "this is also long enough to qualify as extraction material" }], timestamp: 2 } as any,
+        ],
+      } as any,
+      ctx as any,
+    );
+    const started = Date.now();
+    await handleAgentSettled({ type: "agent_settled" }, ctx as any);
+    expect(Date.now() - started).toBeLessThan(35);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(maintenanceFinished).toBe(true);
+    maintenanceSpy.mockRestore();
   });
 
   it("does nothing in print/json/rpc modes", async () => {
