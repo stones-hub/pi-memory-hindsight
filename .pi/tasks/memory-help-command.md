@@ -10,7 +10,7 @@
 
 # Scope
 
-- 当前基线：`916747bc5e07ddc132ad0a68734171593a4bdd04`；工作区另有用户未跟踪文件 `.pi/memory.json`，必须保持未读取、未修改、未暂存。
+- 初始开发基线：`916747bc5e07ddc132ad0a68734171593a4bdd04`。本地 Help commit：`9cf582ab9b70a997413125aa1ac5c1a45241624c`。发布前发现远端 `origin/main` 已推进到 `11ca58b682d2b244d0ba7935daae23eaf1ecd238`，包含已发布 `v0.1.1` Reflect 超时修复。用户已授权普通 merge 和冲突处理；不得 rebase、force-push 或改写任一侧历史。工作区另有用户未跟踪文件 `.pi/memory.json`，必须保持未读取、未修改、未暂存。
 - 允许改动文件/目录：`src/commands/memory-command-parser.ts`、`src/commands/memory-command.ts`、`src/i18n/messages.ts`、`src/runtime/global-runtime.ts`（仅允许增加不触发初始化的 cached-runtime peek，用来保证 help 不创建/修改 SQLite）、相关 `tests/`、`scripts/acceptance-pi.mjs`（仅在证明打包后公开入口确有必要时）、`README.md`、`docs/product-requirements.md`、`docs/acceptance.md`、`package.json` 和 `package-lock.json`（仅将发布版本从 `0.1.0` 提升到用户确认的 `0.2.0`）。
 - Pi 已维护、不要求执行器修改：`docs/memory-help-command.md`、本任务书、`HANDOVER.md`。
 - 禁止改动文件/目录：除上述只读 cached-runtime peek 外的 runtime 初始化行为、数据库 schema/repository、provider、治理服务、identity、recall/extraction 核心逻辑、依赖和 lockfile、`.pi/memory.json`、Pi 配置、live Hindsight 数据。
@@ -20,7 +20,7 @@
 - 执行器：Cursor Agent（原计划 Claude Code，但调用被中止且未产生源码改动；用户随后明确授权切换到 Cursor Agent）
 - 请求模型：Cursor `grok-4.6`（用户在 `composer-2.5` 调用中止后明确指定 Grok 4.6）；实际生效模型以 Cursor 响应可证明字段为准，缺失则记为未证明。
 - 编码授权：已获得；用户在确认方案后明确要求“帮我处理”，并明确要求改用 Cursor Agent 执行。
-- 权限范围：完成本任务实现、测试及 `0.2.0` 版本准备。用户已单独授权 Pi 在最终验收后执行 commit、push `origin/main`、annotated tag `v0.2.0` 和 GitHub Release；编码执行器不得自行执行这些 Git/GitHub 动作，也不得部署或修改 live 配置/数据。
+- 权限范围：完成本任务实现、测试及 `0.2.0` 版本准备。用户已授权将最新 `origin/main` 以普通 merge 合入本地 Help commit 并处理冲突，最终同时保留 `v0.1.1` Reflect 修复与 Help 功能，版本保持 `0.2.0`。编码执行器可执行 `git merge --no-commit --no-ff origin/main` 并解决工作树冲突，但不得 commit、push、tag、创建 Release、rebase、force-push、部署或修改 live 配置/数据；最终 Git/GitHub 动作由 Pi 执行。
 
 # 真实业务背景
 
@@ -74,6 +74,8 @@
 - runtime/provider 不可用时 help 仍可显示，且无 mutation。
 - 未知或参数错误命令继续以 error 显示帮助。
 - 已有命令、TUI-only、安全和治理测试无回归。
+- 合并后的候选完整包含远端 `v0.1.1` 的 Reflect 180 秒独立超时、取消/超时分类、本地化文案、测试与文档；普通 provider 请求仍为 10 秒。
+- 最终 `package.json` 与 `package-lock.json` 版本均为 `0.2.0`，`HANDOVER.md` 同时保留 `v0.1.1` 发布事实和 `v0.2.0` 当前状态。
 - 自动化与打包后真实入口验收通过。
 - 编码 Agent 自报、单元测试、进程/容器存活均不能单独构成完成。
 
