@@ -644,7 +644,7 @@ pi update --extensions
 pi update --all
 ```
 
-将来若发布带 tag 的版本，可安装并固定到具体 ref，例如 `pi install https://github.com/stones-hub/pi-memory-hindsight.git@v0.1.0`（**当前仓库尚无正式发布 tag**，此处仅为示例）。
+需要固定到首个正式版本时，可使用：`pi install https://github.com/stones-hub/pi-memory-hindsight.git@v0.1.0`。直接使用不带 `@ref` 的仓库 URL，则跟随默认分支。
 
 ### 卸载
 
