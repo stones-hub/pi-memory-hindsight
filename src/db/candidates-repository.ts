@@ -105,18 +105,14 @@ export class CandidatesRepository {
       .all(nowIso, includeExpired ? 1 : 0, nowIso) as unknown as CandidateRow[];
   }
 
-  /**
-   * Sweeps unclaimed pending candidates past TTL into `expired` and purges bodies
-   * atomically. Failed/reconciling/approving candidates stay recoverable.
-   */
-  sweepExpired(): number {
+  private sweepExpiredWhere(extraWhere: string, extraParams: Array<string | number | null>): number {
     const nowIso = mutationNowIso();
     const due = this.db
       .prepare(
         `SELECT id, text FROM candidates
-         WHERE state = 'pending' AND expires_at <= ?`,
+         WHERE state = 'pending' AND expires_at <= ?${extraWhere}`,
       )
-      .all(nowIso) as Array<{ id: string; text: string | null }>;
+      .all(nowIso, ...extraParams) as Array<{ id: string; text: string | null }>;
     let changed = 0;
     const update = this.db.prepare(
       `UPDATE candidates
@@ -130,6 +126,34 @@ export class CandidatesRepository {
       changed += Number(result.changes);
     }
     return changed;
+  }
+
+  /**
+   * Sweeps unclaimed pending candidates past TTL into `expired` and purges bodies
+   * atomically, system-wide. Failed/reconciling/approving candidates stay
+   * recoverable. Reserved for system-owned, lease-coordinated maintenance
+   * (`cleanup-service.ts`) which is intentionally not bound to any cwd's
+   * project scope. Per-request/cwd-scoped call sites must use
+   * `sweepExpiredInScope` instead so they cannot mutate candidates outside
+   * the caller's authorized project scope.
+   */
+  sweepExpired(): number {
+    return this.sweepExpiredWhere("", []);
+  }
+
+  /**
+   * Same as `sweepExpired`, but restricted to candidates visible under
+   * `scopeContext`: profile-scope rows plus project-scope rows matching the
+   * caller's current project identity. Used by cwd-scoped candidate
+   * operations (list/approve/reject) so a request bound to one project (or
+   * to no project) cannot expire-and-purge another project's hidden pending
+   * candidates as a side effect.
+   */
+  sweepExpiredInScope(scopeContext: { projectScopeEnabled: boolean; projectIdentity: string | null }): number {
+    return this.sweepExpiredWhere(" AND (scope != 'project' OR (? = 1 AND project_identity = ?))", [
+      scopeContext.projectScopeEnabled ? 1 : 0,
+      scopeContext.projectIdentity,
+    ]);
   }
 
   /**

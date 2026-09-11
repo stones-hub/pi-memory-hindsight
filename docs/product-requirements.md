@@ -133,6 +133,7 @@ All entry points use the same governance services as candidate approval. Explici
 
 - Automatic candidates are persisted in SQLite and announced without interrupting the task.
 - `/memory candidates` opens a bilingual interactive TUI supporting detail, evidence summary, type/scope, proposed action, similarity/conflict, approve, reject, edit-and-approve, filters, expired view, and low-value batch rejection.
+- A Project-scope candidate is only visible and operable (in the TUI, the deterministic text list, expired view, conflict materialization, batch rejection, and direct-id approve/reject/edit-approve) when the current cwd has Project Memory enabled with an identity matching the candidate's project exactly; the reviewer states whether it is showing Profile-only or Profile+Project. Candidate detail and listing show state, project identity, and a safe, localized, allowlisted explanation of any `failure_code` — never raw provider response bodies, headers, credentials, or unbounded exception text.
 - Deterministic text commands use the same business service for testing and non-TUI recovery, but automatic memory is unsupported in print/JSON/RPC modes.
 
 ## Lifecycle

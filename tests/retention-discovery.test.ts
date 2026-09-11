@@ -20,6 +20,7 @@ import {
   listCandidates,
   rejectCandidate,
   renderCandidateSummary,
+  type CandidateScopeContext,
 } from "../src/governance/candidate-service.js";
 import { buildProviderMetadata } from "../src/governance/remember-service.js";
 import * as cleanupService from "../src/governance/cleanup-service.js";
@@ -65,6 +66,8 @@ import { parseMemoryCommand } from "../src/commands/memory-command-parser.js";
 import extension from "../src/index.js";
 import { HindsightAdapter } from "../src/provider/hindsight-adapter.js";
 import { startMockHindsightServer } from "../src/testing/mock-hindsight.js";
+
+const PROFILE_SCOPE: CandidateScopeContext = { projectIdentity: null, projectScopeEnabled: false };
 
 const { getGlobalRuntimeMock, getLocalRuntimeMock, resolveProjectBankMock } = vi.hoisted(() => ({
   getGlobalRuntimeMock: vi.fn(),
@@ -527,7 +530,7 @@ describe("candidate body purge", () => {
       targetMemoryId: null,
       projectIdentity: null,
     });
-    expect(rejectCandidate(runtime as any, rejected.id).ok).toBe(true);
+    expect(rejectCandidate(runtime as any, rejected.id, PROFILE_SCOPE).ok).toBe(true);
     const afterReject = runtime.repos.candidates.getById(rejected.id)!;
     expect(afterReject.state).toBe("rejected");
     expect(afterReject.text).toBeNull();
@@ -1435,7 +1438,7 @@ describe("candidate recovery lifecycle", () => {
     runtime.db.prepare("UPDATE candidates SET state='failed', expires_at=? WHERE id=?").run(pastTtl, failed.id);
     runtime.db.prepare("UPDATE candidates SET state='reconciling', expires_at=? WHERE id=?").run(pastTtl, reconciling.id);
 
-    const visible = listCandidates(runtime as any, false);
+    const visible = listCandidates(runtime as any, false, PROFILE_SCOPE);
     expect(visible.map((row) => row.id)).toEqual(expect.arrayContaining([failed.id, reconciling.id]));
     expect(runtime.repos.candidates.getById(failed.id)!.text).toBe("Failed but recoverable");
     expect(runtime.repos.candidates.getById(reconciling.id)!.text).toBe("Reconciling uncertain");
@@ -1456,7 +1459,7 @@ describe("candidate recovery lifecycle", () => {
     const runtime = makeRuntime();
     const reconciling = plantCandidate(runtime, "Keep body");
     runtime.db.prepare("UPDATE candidates SET state='reconciling', expires_at=? WHERE id=?").run(pastTtl, reconciling.id);
-    expect(rejectCandidate(runtime as any, reconciling.id)).toEqual({ ok: false, reason: "not_rejectable" });
+    expect(rejectCandidate(runtime as any, reconciling.id, PROFILE_SCOPE)).toEqual({ ok: false, reason: "not_rejectable" });
     expect(runtime.repos.candidates.getById(reconciling.id)!.text).toBe("Keep body");
     expect(runtime.repos.candidates.getById(reconciling.id)!.state).toBe("reconciling");
   });
@@ -1468,7 +1471,7 @@ describe("candidate recovery lifecycle", () => {
     runtime.db
       .prepare("UPDATE candidates SET state='failed', failure_code='stale_target', expires_at=? WHERE id=?")
       .run(pastTtl, failed.id);
-    expect(rejectCandidate(runtime as any, failed.id)).toEqual({ ok: true });
+    expect(rejectCandidate(runtime as any, failed.id, PROFILE_SCOPE)).toEqual({ ok: true });
     const after = runtime.repos.candidates.getById(failed.id)!;
     expect(after.state).toBe("rejected");
     expect(after.text).toBeNull();
@@ -1510,6 +1513,7 @@ describe("candidate recovery lifecycle", () => {
       candidateId: failed.id,
       cwd: "/repo",
       sourceSessionId: "session-1",
+      scopeContext: PROFILE_SCOPE,
     });
     expect(approved.outcome).toBe("approved");
     const after = runtime.repos.candidates.getById(failed.id)!;

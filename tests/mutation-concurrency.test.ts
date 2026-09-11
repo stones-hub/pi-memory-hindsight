@@ -13,12 +13,18 @@ import { buildOwnedDocumentId } from "../src/provider/validation.js";
 import { remember } from "../src/governance/remember-service.js";
 import { replaceMemory } from "../src/governance/replace-service.js";
 import { forgetMemory } from "../src/governance/forget-service.js";
-import { approveCandidate, setBeforeCandidateApprovalFinalizeForTests } from "../src/governance/candidate-service.js";
+import {
+  approveCandidate,
+  setBeforeCandidateApprovalFinalizeForTests,
+  type CandidateScopeContext,
+} from "../src/governance/candidate-service.js";
 import {
   mintCompactReviveCreateKey,
   reviveCreateIdempotencyKey,
 } from "../src/governance/mutation-ownership.js";
 import { HindsightAdapter } from "../src/provider/hindsight-adapter.js";
+
+const PROFILE_SCOPE: CandidateScopeContext = { projectIdentity: null, projectScopeEnabled: false };
 
 function sha256(text: string): string {
   return createHash("sha256").update(text.trim()).digest("hex");
@@ -188,6 +194,7 @@ describe("mutation generation concurrency and recovery", () => {
       candidateId: candidate.id,
       cwd: "/repo",
       sourceSessionId: "s3",
+      scopeContext: PROFILE_SCOPE,
     });
     expect(approved.outcome).toBe("approved");
     if (approved.outcome === "approved") {
@@ -279,6 +286,7 @@ describe("mutation generation concurrency and recovery", () => {
       candidateId: candidate.id,
       cwd: "/repo",
       sourceSessionId: "s-cand",
+      scopeContext: PROFILE_SCOPE,
     });
     expect(approved.outcome).toBe("approved");
     if (approved.outcome === "approved") {
@@ -312,6 +320,7 @@ describe("mutation generation concurrency and recovery", () => {
         candidateId: candidate.id,
         cwd: "/repo",
         sourceSessionId: "s-race",
+        scopeContext: PROFILE_SCOPE,
       });
       expect(result.outcome).toBe("rejected");
       expect(runtime.repos.candidates.getById(candidate.id)!.state).not.toBe("approved");
@@ -341,6 +350,7 @@ describe("mutation generation concurrency and recovery", () => {
       candidateId: candidate.id,
       cwd: "/repo",
       sourceSessionId: "s-ok",
+      scopeContext: PROFILE_SCOPE,
     });
     expect(approved.outcome).toBe("approved");
     if (approved.outcome !== "approved") return;

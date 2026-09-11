@@ -17,6 +17,7 @@ import {
   candidateHasOpenConflict,
   listCandidates,
   rejectCandidate,
+  type CandidateScopeContext,
 } from "../src/governance/candidate-service.js";
 import type { MemoryStatus, MemoryType, Scope } from "../src/db/types.js";
 
@@ -27,6 +28,8 @@ const { resolveProjectBankMock } = vi.hoisted(() => ({
 vi.mock("../src/runtime/project-runtime.js", () => ({
   resolveProjectBank: resolveProjectBankMock,
 }));
+
+const PROFILE_SCOPE: CandidateScopeContext = { projectIdentity: null, projectScopeEnabled: false };
 
 function sha256(text: string): string {
   return createHash("sha256").update(text.trim()).digest("hex");
@@ -222,7 +225,7 @@ describe("conflict disclosure for update/supersede candidates", () => {
     const candidate = makeUpdateCandidate(runtime, target.id);
 
     expect(candidateHasOpenConflict(runtime as any, candidate.id)).toBe(false);
-    const rows = listCandidates(runtime as any, false);
+    const rows = listCandidates(runtime as any, false, PROFILE_SCOPE);
     expect(rows.map((r) => r.id)).toContain(candidate.id);
     expect(candidateHasOpenConflict(runtime as any, candidate.id)).toBe(true);
 
@@ -244,7 +247,7 @@ describe("conflict disclosure for update/supersede candidates", () => {
       expectedTargetTextHash: null,
       projectIdentity: null,
     });
-    listCandidates(runtime as any, false);
+    listCandidates(runtime as any, false, PROFILE_SCOPE);
     expect(candidateHasOpenConflict(runtime as any, independent.id)).toBe(false);
   });
 });
@@ -263,6 +266,7 @@ describe("malformed and invalid-target candidate approval", () => {
         candidateId: candidate.id,
         cwd: "/repo",
         sourceSessionId: "session-1",
+        scopeContext: PROFILE_SCOPE,
       });
       expect(result.outcome).toBe("rejected");
     }
@@ -298,6 +302,7 @@ describe("malformed and invalid-target candidate approval", () => {
         candidateId: candidate.id,
         cwd: "/repo",
         sourceSessionId: "session-1",
+        scopeContext: PROFILE_SCOPE,
       });
       expect(result.outcome, testCase.label).toBe("rejected");
     }
@@ -342,6 +347,7 @@ describe("malformed and invalid-target candidate approval", () => {
     const result = await approveCandidate(runtime as any, {
       candidateId: candidate.id,
       cwd: "/repo-a",
+      scopeContext: { projectIdentity: "repo-a", projectScopeEnabled: true },
       sourceSessionId: "session-1",
     });
     expect(result.outcome).toBe("rejected");
@@ -358,12 +364,13 @@ describe("governed update/supersede approval", () => {
       proposedAction: "supersede",
       text: "New preference.",
     });
-    listCandidates(runtime as any, false); // materializes the conflict, as the reviewer UI would trigger
+    listCandidates(runtime as any, false, PROFILE_SCOPE); // materializes the conflict, as the reviewer UI would trigger
 
     const result = await approveCandidate(runtime as any, {
       candidateId: candidate.id,
       cwd: "/repo",
       sourceSessionId: "session-1",
+      scopeContext: PROFILE_SCOPE,
     });
 
     expect(result.outcome).toBe("approved");
@@ -406,12 +413,13 @@ describe("governed update/supersede approval", () => {
       ambiguous: false,
     });
     const candidate = makeUpdateCandidate(runtime, target.id, { text: "Attempted change." });
-    listCandidates(runtime as any, false);
+    listCandidates(runtime as any, false, PROFILE_SCOPE);
 
     const result = await approveCandidate(runtime as any, {
       candidateId: candidate.id,
       cwd: "/repo",
       sourceSessionId: "session-1",
+      scopeContext: PROFILE_SCOPE,
     });
 
     expect(result.outcome).toBe("rejected");
@@ -434,6 +442,7 @@ describe("governed update/supersede approval", () => {
       candidateId: candidate.id,
       cwd: "/repo",
       sourceSessionId: "session-1",
+      scopeContext: PROFILE_SCOPE,
     });
 
     expect(result.outcome).toBe("approved");
@@ -625,7 +634,7 @@ describe("governed update/supersede approval", () => {
     const runtime = makeRuntime();
     const target = makeTarget(runtime, { text: "Original preference." });
     const candidate = makeUpdateCandidate(runtime, target.id, { text: "Candidate correction." });
-    listCandidates(runtime as any, false);
+    listCandidates(runtime as any, false, PROFILE_SCOPE);
 
     // Intervening governed update changes the target hash under the same document.
     const intervening = await replaceMemory(runtime as any, {
@@ -647,6 +656,7 @@ describe("governed update/supersede approval", () => {
       candidateId: candidate.id,
       cwd: "/repo",
       sourceSessionId: "session-1",
+      scopeContext: PROFILE_SCOPE,
     });
     expect(result.outcome).toBe("rejected");
     expect(runtime.adapter.retainOneMemory).not.toHaveBeenCalled();
@@ -694,10 +704,10 @@ describe("reject resolves conflicts and forget removes the reused document", () 
     const runtime = makeRuntime();
     const target = makeTarget(runtime);
     const candidate = makeUpdateCandidate(runtime, target.id);
-    listCandidates(runtime as any, false);
+    listCandidates(runtime as any, false, PROFILE_SCOPE);
     expect(candidateHasOpenConflict(runtime as any, candidate.id)).toBe(true);
 
-    expect(rejectCandidate(runtime as any, candidate.id).ok).toBe(true);
+    expect(rejectCandidate(runtime as any, candidate.id, PROFILE_SCOPE).ok).toBe(true);
     expect(candidateHasOpenConflict(runtime as any, candidate.id)).toBe(false);
     const target2 = runtime.repos.memories.getById(target.id)!;
     expect(target2.status).toBe("active");
@@ -715,6 +725,7 @@ describe("reject resolves conflicts and forget removes the reused document", () 
       candidateId: candidate.id,
       cwd: "/repo",
       sourceSessionId: "session-1",
+      scopeContext: PROFILE_SCOPE,
     });
     expect(approved.outcome).toBe("approved");
 
@@ -751,6 +762,7 @@ describe("reject resolves conflicts and forget removes the reused document", () 
       candidateId: "legacy-candidate",
       cwd: "/repo",
       sourceSessionId: "session-1",
+      scopeContext: PROFILE_SCOPE,
     });
     expect(result.outcome).toBe("rejected");
     expect(runtime.adapter.retainOneMemory).not.toHaveBeenCalled();

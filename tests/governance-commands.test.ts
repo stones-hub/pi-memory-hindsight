@@ -9,7 +9,7 @@ import { OperationsRepository } from "../src/db/operations-repository.js";
 import { MaintenanceRepository } from "../src/db/maintenance-repository.js";
 import { AuditRepository, ConflictsRepository, UsageRepository } from "../src/db/audit-conflicts-usage-repository.js";
 import { profileBankId, projectBankId } from "../src/identity/bank-id.js";
-import { approveCandidate } from "../src/governance/candidate-service.js";
+import { approveCandidate, type CandidateScopeContext } from "../src/governance/candidate-service.js";
 import { forgetIdempotencyKey } from "../src/governance/mutation-ownership.js";
 import { forgetMemory } from "../src/governance/forget-service.js";
 import { projectForgetCtx } from "./forget-test-context.js";
@@ -21,6 +21,8 @@ import { createCandidateReviewer } from "../src/ui/candidate-reviewer.js";
 import { getSessionState, noteTurnStart, resetAllSessionStateForTests, setSessionMemoryOff } from "../src/runtime/session-runtime.js";
 import { buildOwnedDocumentId } from "../src/provider/validation.js";
 import { handleAgentEnd, handleAgentSettled } from "../src/extraction/extraction-service.js";
+
+const PROFILE_SCOPE: CandidateScopeContext = { projectIdentity: null, projectScopeEnabled: false };
 
 const { getGlobalRuntimeMock, getLocalRuntimeMock, peekCachedLocalRuntimeMock, resolveProjectBankMock } = vi.hoisted(() => ({
   getGlobalRuntimeMock: vi.fn(),
@@ -483,6 +485,7 @@ describe("slice 4 governance commands and tools", () => {
     const approval = await approveCandidate(runtime as any, {
       candidateId: candidate.id,
       cwd: "/repo",
+      scopeContext: { projectIdentity: "repo", projectScopeEnabled: true },
       sourceSessionId: "session-1",
     });
 
@@ -496,6 +499,7 @@ describe("slice 4 governance commands and tools", () => {
 
   it("opens candidates reviewer through ui.custom and supports text listing", async () => {
     const runtime = makeRuntime();
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
     runtime.repos.candidates.create({
       scope: "profile",
       memoryType: "preference",
@@ -544,6 +548,7 @@ describe("slice 4 governance commands and tools", () => {
     const result = await approveCandidate(runtime as any, {
       candidateId: candidate.id,
       cwd: "/repo",
+      scopeContext: PROFILE_SCOPE,
       sourceSessionId: "s1",
     });
 
@@ -1186,7 +1191,7 @@ describe("slice 4 governance commands and tools", () => {
     });
     const ctx = makeContext();
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
-    const reviewer = createCandidateReviewer({ runtime: runtime as any, ctx: ctx as any, language: "en" });
+    const reviewer = createCandidateReviewer({ runtime: runtime as any, ctx: ctx as any, language: "en", scopeContext: PROFILE_SCOPE });
     expect(reviewer.render(20).every((line) => line.length <= 20)).toBe(true);
     await reviewer.handleInput("j");
     await reviewer.handleInput("e");
@@ -1201,6 +1206,7 @@ describe("slice 4 governance commands and tools", () => {
 
   it("keeps local governance commands working when provider is unavailable, and recovers later", async () => {
     const runtime = makeRuntime();
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
     runtime.profile.language = "en";
     const candidate = runtime.repos.candidates.create({
       scope: "profile",
@@ -1290,5 +1296,125 @@ describe("slice 4 governance commands and tools", () => {
     const [[message]] = (ctx.ui.notify as any).mock.calls;
     expect(message).toContain("项目范围：已启用（repo）");
     expect(runtime.adapter.ensureOwnedBank).not.toHaveBeenCalled();
+  });
+
+  describe("candidates approve/edit-approve commands: zero provider I/O before authorization", () => {
+    function makeProjectCandidate(runtime: ReturnType<typeof makeRuntime>) {
+      return runtime.repos.candidates.create({
+        scope: "project",
+        memoryType: "project_fact",
+        text: "The build uses pnpm workspaces.",
+        evidenceSummary: "explicit",
+        sourceSessionId: "s1",
+        sourceRef: "turn:1",
+        proposedAction: "create",
+        targetMemoryId: null,
+        projectIdentity: "repo-a",
+      });
+    }
+
+    it("does not call getGlobalRuntime for 'candidates approve' against a mismatched-project candidate", async () => {
+      const runtime = makeRuntime();
+      const candidate = makeProjectCandidate(runtime);
+      getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+      resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: "repo-b", bankId: projectBankId("repo-b") });
+      const { commands } = captureExtension();
+      const command = commands.get("memory");
+      const ctx = makeContext();
+
+      await command.handler(`candidates approve ${candidate.id}`, ctx);
+
+      expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+      expect(runtime.repos.candidates.getById(candidate.id)?.state).toBe("pending");
+      expect((ctx.ui.notify as any).mock.calls.at(-1)?.[1]).toBe("error");
+    });
+
+    it("does not call getGlobalRuntime for 'candidates approve' when the current project is disabled", async () => {
+      const runtime = makeRuntime();
+      const candidate = makeProjectCandidate(runtime);
+      getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+      resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+      const { commands } = captureExtension();
+      const command = commands.get("memory");
+      const ctx = makeContext();
+
+      await command.handler(`candidates approve ${candidate.id}`, ctx);
+
+      expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+      expect(runtime.repos.candidates.getById(candidate.id)?.state).toBe("pending");
+    });
+
+    it("does call getGlobalRuntime and approves for 'candidates approve' against a matching-project candidate", async () => {
+      const runtime = makeRuntime();
+      const candidate = makeProjectCandidate(runtime);
+      getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+      getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+      resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: "repo-a", bankId: projectBankId("repo-a") });
+      const { commands } = captureExtension();
+      const command = commands.get("memory");
+      const ctx = makeContext();
+
+      await command.handler(`candidates approve ${candidate.id}`, ctx);
+
+      expect(getGlobalRuntimeMock).toHaveBeenCalled();
+      expect(runtime.repos.candidates.getById(candidate.id)?.state).toBe("approved");
+    });
+
+    it("does call getGlobalRuntime for 'candidates approve' against a Profile candidate even when the project is disabled", async () => {
+      const runtime = makeRuntime();
+      const candidate = runtime.repos.candidates.create({
+        scope: "profile",
+        memoryType: "preference",
+        text: "Profile visible everywhere.",
+        evidenceSummary: "explicit",
+        sourceSessionId: "s1",
+        sourceRef: "turn:1",
+        proposedAction: "create",
+        targetMemoryId: null,
+        projectIdentity: null,
+      });
+      getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+      getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+      resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+      const { commands } = captureExtension();
+      const command = commands.get("memory");
+      const ctx = makeContext();
+
+      await command.handler(`candidates approve ${candidate.id}`, ctx);
+
+      expect(getGlobalRuntimeMock).toHaveBeenCalled();
+      expect(runtime.repos.candidates.getById(candidate.id)?.state).toBe("approved");
+    });
+
+    it("does not call getGlobalRuntime for 'candidates edit-approve' against a mismatched-project candidate", async () => {
+      const runtime = makeRuntime();
+      const candidate = makeProjectCandidate(runtime);
+      getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+      resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: "repo-b", bankId: projectBankId("repo-b") });
+      const { commands } = captureExtension();
+      const command = commands.get("memory");
+      const ctx = makeContext();
+
+      await command.handler(`candidates edit-approve ${candidate.id} A maliciously edited body.`, ctx);
+
+      expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+      expect(runtime.repos.candidates.getById(candidate.id)?.state).toBe("pending");
+    });
+
+    it("does call getGlobalRuntime and approves the edited body for 'candidates edit-approve' against a matching-project candidate", async () => {
+      const runtime = makeRuntime();
+      const candidate = makeProjectCandidate(runtime);
+      getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+      getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+      resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: "repo-a", bankId: projectBankId("repo-a") });
+      const { commands } = captureExtension();
+      const command = commands.get("memory");
+      const ctx = makeContext();
+
+      await command.handler(`candidates edit-approve ${candidate.id} An edited body of sufficient length.`, ctx);
+
+      expect(getGlobalRuntimeMock).toHaveBeenCalled();
+      expect(runtime.repos.candidates.getById(candidate.id)?.state).toBe("approved");
+    });
   });
 });

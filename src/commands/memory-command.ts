@@ -5,11 +5,15 @@ import { getSessionState, setSessionMemoryOff } from "../runtime/session-runtime
 import { normalizeLanguage, t, type Language } from "../i18n/messages.js";
 import {
   approveCandidate,
+  authorizeCandidateForApproval,
   candidateHasOpenConflict,
   languageForRuntime,
   listCandidates,
   rejectCandidate,
+  renderApproveOutcome,
   renderCandidateSummary,
+  renderRejectOutcome,
+  toCandidateScopeContext,
 } from "../governance/candidate-service.js";
 import { remember, textHashOf } from "../governance/remember-service.js";
 import { forgetMemory } from "../governance/forget-service.js";
@@ -32,28 +36,6 @@ import { parseMemoryCommand } from "./memory-command-parser.js";
 import { createCandidateReviewer } from "../ui/candidate-reviewer.js";
 import { resolveProjectBank } from "../runtime/project-runtime.js";
 import { mutationNowMs } from "../governance/mutation-clock.js";
-
-function candidateOutcomeMessage(
-  language: Language,
-  result:
-    | { outcome: "approved"; memoryId: string }
-    | { outcome: "rejected"; reason: string }
-    | { outcome: "retryable"; reason: string }
-    | { outcome: "not_found" }
-    | { outcome: "already_decided" },
-): string {
-  switch (result.outcome) {
-    case "approved":
-      return t(language, "candidates.approved", { id: result.memoryId });
-    case "already_decided":
-      return t(language, "candidates.claim_failed");
-    case "not_found":
-      return t(language, "candidates.not_found");
-    case "rejected":
-    case "retryable":
-      return result.reason;
-  }
-}
 
 function rememberOutcomeMessage(
   language: Language,
@@ -116,8 +98,10 @@ async function openCandidatesUi(ctx: ExtensionContext): Promise<void> {
   }
   const runtime = runtimeResult.runtime;
   const language = languageForRuntime(runtime);
+  const projectBank = await resolveProjectBank(ctx.cwd);
+  const scopeContext = toCandidateScopeContext(projectBank);
   await ctx.ui.custom<void>((tui, _theme, _kb, done) => {
-    const reviewer = createCandidateReviewer({ runtime, ctx, language });
+    const reviewer = createCandidateReviewer({ runtime, ctx, language, scopeContext });
     return {
       render: (width: number) => reviewer.render(width),
       invalidate: () => reviewer.invalidate(),
@@ -343,7 +327,9 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
           await openCandidatesUi(ctx);
           return;
         case "candidates-list": {
-          const rows = listCandidates(localRuntime, false);
+          const projectBank = await resolveProjectBank(ctx.cwd);
+          const scopeContext = toCandidateScopeContext(projectBank);
+          const rows = listCandidates(localRuntime, false, scopeContext);
           ctx.ui.notify(
             rows.length
               ? rows
@@ -356,14 +342,10 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
         }
         case "candidates-reject":
           {
-            const rejected = rejectCandidate(localRuntime, parsed.id);
-            if (rejected.ok) {
-              ctx.ui.notify(t(language, "candidates.rejected"), "info");
-            } else if (rejected.reason === "not_rejectable") {
-              ctx.ui.notify(t(language, "candidates.reject_not_rejectable"), "error");
-            } else {
-              ctx.ui.notify(t(language, "candidates.claim_failed"), "error");
-            }
+            const projectBank = await resolveProjectBank(ctx.cwd);
+            const scopeContext = toCandidateScopeContext(projectBank);
+            const rejected = rejectCandidate(localRuntime, parsed.id, scopeContext);
+            ctx.ui.notify(renderRejectOutcome(language, rejected), rejected.ok ? "info" : "error");
           }
           return;
         case "remember": {
@@ -432,34 +414,64 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
           return;
         }
         case "candidates-approve": {
+          const projectBank = await resolveProjectBank(ctx.cwd);
+          const scopeContext = toCandidateScopeContext(projectBank);
+          // Authorize against the local, non-provider runtime before ever
+          // constructing a provider-capable runtime: a wrong/disabled-
+          // project direct-ID command must trigger zero provider I/O,
+          // including the health/version compatibility check that
+          // getGlobalRuntime() performs as part of building that runtime.
+          const authorization = authorizeCandidateForApproval(localRuntime, parsed.id, scopeContext);
+          if (!authorization.ok) {
+            ctx.ui.notify(renderApproveOutcome(language, authorization.result), "error");
+            return;
+          }
           const providerRuntime = await getGlobalRuntime();
           if (!providerRuntime.ok) {
             ctx.ui.notify(t(language, "memory.status.unavailable"), "error");
             return;
           }
+          // Re-resolve once more: the provider readiness check above may
+          // have taken an arbitrary amount of time. approveCandidate()
+          // re-checks authorization against this scope as defense-in-depth.
+          const freshProjectBank = await resolveProjectBank(ctx.cwd);
           const result = await approveCandidate(providerRuntime.runtime, {
             candidateId: parsed.id,
             cwd: ctx.cwd,
+            scopeContext: toCandidateScopeContext(freshProjectBank),
             sourceSessionId: ctx.sessionManager.getSessionId(),
             signal: ctx.signal,
           });
-          ctx.ui.notify(candidateOutcomeMessage(language, result), result.outcome === "approved" ? "info" : "error");
+          ctx.ui.notify(renderApproveOutcome(language, result), result.outcome === "approved" ? "info" : "error");
           return;
         }
         case "candidates-edit-approve": {
+          const projectBank = await resolveProjectBank(ctx.cwd);
+          const scopeContext = toCandidateScopeContext(projectBank);
+          // Authorize before ever constructing a provider-capable runtime,
+          // same rationale as candidates-approve above.
+          const authorization = authorizeCandidateForApproval(localRuntime, parsed.id, scopeContext);
+          if (!authorization.ok) {
+            ctx.ui.notify(renderApproveOutcome(language, authorization.result), "error");
+            return;
+          }
           const providerRuntime = await getGlobalRuntime();
           if (!providerRuntime.ok) {
             ctx.ui.notify(t(language, "memory.status.unavailable"), "error");
             return;
           }
+          // Re-resolve once more: the provider readiness check above may
+          // have taken an arbitrary amount of time.
+          const freshProjectBank = await resolveProjectBank(ctx.cwd);
           const result = await approveCandidate(providerRuntime.runtime, {
             candidateId: parsed.id,
             cwd: ctx.cwd,
+            scopeContext: toCandidateScopeContext(freshProjectBank),
             sourceSessionId: ctx.sessionManager.getSessionId(),
             editedText: parsed.content,
             signal: ctx.signal,
           });
-          ctx.ui.notify(candidateOutcomeMessage(language, result), result.outcome === "approved" ? "info" : "error");
+          ctx.ui.notify(renderApproveOutcome(language, result), result.outcome === "approved" ? "info" : "error");
           return;
         }
         case "forget": {
