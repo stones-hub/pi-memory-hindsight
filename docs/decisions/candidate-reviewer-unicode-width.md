@@ -1,6 +1,6 @@
 # Candidate reviewer Unicode terminal-width fix
 
-Status: implemented and independently accepted locally by Pi (2026-09-11); uncommitted
+Status: released as v0.2.2 (2026-09-11)
 
 ## Goal
 
