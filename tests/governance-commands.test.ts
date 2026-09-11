@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import extension from "../src/index.js";
 import { MemoryDatabase } from "../src/db/database.js";
 import { ProfileRepository } from "../src/db/profile-repository.js";
@@ -1192,7 +1193,7 @@ describe("slice 4 governance commands and tools", () => {
     const ctx = makeContext();
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     const reviewer = createCandidateReviewer({ runtime: runtime as any, ctx: ctx as any, language: "en", scopeContext: PROFILE_SCOPE });
-    expect(reviewer.render(20).every((line) => line.length <= 20)).toBe(true);
+    expect(reviewer.render(20).every((line) => visibleWidth(line) <= 20)).toBe(true);
     await reviewer.handleInput("j");
     await reviewer.handleInput("e");
     await reviewer.handleInput("a");

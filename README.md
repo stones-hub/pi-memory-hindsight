@@ -676,7 +676,7 @@ pi update --extensions
 pi update --all
 ```
 
-需要固定到当前正式版本时，可使用：`pi install https://github.com/stones-hub/pi-memory-hindsight.git@v0.2.1`。需要固定到首个正式版本时，可使用 `@v0.1.0`。直接使用不带 `@ref` 的仓库 URL，则跟随默认分支。
+需要固定到当前正式版本时，可使用：`pi install https://github.com/stones-hub/pi-memory-hindsight.git@v0.2.2`。需要固定到首个正式版本时，可使用 `@v0.1.0`。直接使用不带 `@ref` 的仓库 URL，则跟随默认分支。
 
 ### 卸载
 

@@ -1,5 +1,6 @@
 import type { CandidateRow } from "../db/types.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { GlobalRuntime } from "../runtime/global-runtime.js";
 import { getGlobalRuntime } from "../runtime/global-runtime.js";
 import {
@@ -28,6 +29,15 @@ export interface CandidateReviewerDeps {
   ctx: Pick<ExtensionContext, "cwd" | "sessionManager" | "ui" | "signal">;
   language: Language;
   scopeContext: CandidateScopeContext;
+}
+
+// Pi's TUI component contract requires visible terminal-column width, not
+// UTF-16 code-unit count. String.prototype.slice(0, width) undercounts for
+// wide (CJK/emoji) content and overcounts for ANSI escapes, which crashed
+// the reviewer on Chinese Candidate text. truncateToWidth() is ANSI/Unicode
+// aware and never returns a result wider than the (clamped) budget.
+function fitToWidth(line: string, width: number): string {
+  return truncateToWidth(line, Math.max(0, width), "");
 }
 
 export function createCandidateReviewer(deps: CandidateReviewerDeps) {
@@ -72,32 +82,35 @@ export function createCandidateReviewer(deps: CandidateReviewerDeps) {
         for (let index = 0; index < items.length; index += 1) {
           const row = items[index]!;
           const hasOpenConflict = candidateHasOpenConflict(deps.runtime, row.id);
-          lines.push(`${index === selectedIndex ? "> " : "  "}${renderCandidateSummary(deps.language, row, hasOpenConflict)}`.slice(0, width));
+          lines.push(fitToWidth(`${index === selectedIndex ? "> " : "  "}${renderCandidateSummary(deps.language, row, hasOpenConflict)}`, width));
         }
         const row = current();
         if (row) {
           lines.push("");
-          lines.push(`id: ${row.id}`.slice(0, width));
-          lines.push(`state: ${row.state}`.slice(0, width));
+          lines.push(fitToWidth(`id: ${row.id}`, width));
+          lines.push(fitToWidth(`state: ${row.state}`, width));
           if (row.scope === "project" && row.project_identity) {
-            lines.push(t(deps.language, "candidates.detail.project", { identity: row.project_identity }).slice(0, width));
+            lines.push(fitToWidth(t(deps.language, "candidates.detail.project", { identity: row.project_identity }), width));
           }
           const failureExplanation = explainCandidateFailureCode(deps.language, row.failure_code);
           if (failureExplanation) {
             lines.push(
-              t(deps.language, "candidates.detail.failure", { explanation: failureExplanation }).slice(0, width),
+              fitToWidth(t(deps.language, "candidates.detail.failure", { explanation: failureExplanation }), width),
             );
           }
           lines.push(
-            (row.evidence_summary
-              ? t(deps.language, "candidates.detail.evidence", { evidence: row.evidence_summary })
-              : t(deps.language, "candidates.detail.no_evidence")).slice(0, width),
+            fitToWidth(
+              row.evidence_summary
+                ? t(deps.language, "candidates.detail.evidence", { evidence: row.evidence_summary })
+                : t(deps.language, "candidates.detail.no_evidence"),
+              width,
+            ),
           );
         }
       }
       lines.push("");
-      lines.push(t(deps.language, "candidates.controls").slice(0, width));
-      return lines.map((line) => line.slice(0, width));
+      lines.push(fitToWidth(t(deps.language, "candidates.controls"), width));
+      return lines.map((line) => fitToWidth(line, width));
     },
     invalidate() {},
     async handleInput(data: string): Promise<"done" | void> {
