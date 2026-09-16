@@ -12,7 +12,7 @@ import { projectForgetCtx } from "./forget-test-context.js";
 import { remember } from "../src/governance/remember-service.js";
 import { replaceMemory } from "../src/governance/replace-service.js";
 import { handleBeforeAgentStart } from "../src/recall/recall-service.js";
-import { noteTurnStart, resetAllSessionStateForTests } from "../src/runtime/session-runtime.js";
+import { noteInputEvent, resetAllSessionStateForTests } from "../src/runtime/session-runtime.js";
 import { startMockHindsightServer, type MockHindsightServer } from "../src/testing/mock-hindsight.js";
 import { buildOwnedDocumentId } from "../src/provider/validation.js";
 import { createHash } from "node:crypto";
@@ -394,7 +394,7 @@ describe("integration with real sqlite + adapter + mock hindsight", () => {
   });
 });
 
-function makeRecallCtx(sessionId: string, cwd: string) {
+function makeRecallCtx(sessionId: string, cwd: string, leafId: string | null = null) {
   const getBranch = vi.fn(() => []);
   const appendEntry = vi.fn();
   return {
@@ -402,12 +402,16 @@ function makeRecallCtx(sessionId: string, cwd: string) {
       mode: "tui" as const,
       cwd,
       signal: undefined,
-      sessionManager: { getSessionId: () => sessionId, getBranch, appendEntry },
+      sessionManager: { getSessionId: () => sessionId, getLeafId: () => leafId, getBranch, appendEntry },
       ui: { notify: vi.fn() },
     },
     getBranch,
     appendEntry,
   };
+}
+
+function noteOrdinaryInput(sessionId: string, text = "question"): void {
+  noteInputEvent(sessionId, { type: "input", text, source: "interactive" });
 }
 
 describe("handleBeforeAgentStart with real sqlite + real adapter + mock hindsight", () => {
@@ -428,7 +432,7 @@ describe("handleBeforeAgentStart with real sqlite + real adapter + mock hindsigh
     expect(written.outcome).toBe("written");
 
     const sessionId = "session-1";
-    noteTurnStart(sessionId, { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput(sessionId);
     const { ctx, getBranch, appendEntry } = makeRecallCtx(sessionId, "/repo");
     const result = await handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "What are my preferences?", systemPrompt: "BASE", systemPromptOptions: {} as any },
@@ -445,7 +449,7 @@ describe("handleBeforeAgentStart with real sqlite + real adapter + mock hindsigh
     const memoryId = runtime.repos.memories.listActive("profile", null)[0]!.id;
     await expect(forgetMemory(runtime as any, memoryId)).resolves.toEqual({ outcome: "forgotten" });
 
-    noteTurnStart(sessionId, { type: "turn_start", turnIndex: 2, timestamp: Date.now() });
+    noteOrdinaryInput(sessionId);
     const result2 = await handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "What are my preferences?", systemPrompt: "BASE", systemPromptOptions: {} as any },
       ctx as any,
@@ -471,7 +475,7 @@ describe("handleBeforeAgentStart with real sqlite + real adapter + mock hindsigh
     expect(written.outcome).toBe("written");
 
     const sessionId = "session-1";
-    noteTurnStart(sessionId, { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput(sessionId);
     const { ctx, getBranch, appendEntry } = makeRecallCtx(sessionId, "/repo");
     const result = await handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "What did we decide about testing?", systemPrompt: "BASE", systemPromptOptions: {} as any },
@@ -488,7 +492,7 @@ describe("handleBeforeAgentStart with real sqlite + real adapter + mock hindsigh
       outcome: "forgotten",
     });
 
-    noteTurnStart(sessionId, { type: "turn_start", turnIndex: 2, timestamp: Date.now() });
+    noteOrdinaryInput(sessionId);
     const result2 = await handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "What did we decide about testing?", systemPrompt: "BASE", systemPromptOptions: {} as any },
       ctx as any,

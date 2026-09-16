@@ -1,6 +1,6 @@
 {
   "name": "pi-memory-hindsight",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Governed long-term memory extension for Pi, backed by Hindsight",
   "type": "module",
   "license": "Apache-2.0",

@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { calculateCost, createAssistantMessageEventStream, type AssistantMessage, type Context, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
-import { ACCEPTANCE_MARKERS, RECALL_HEADER_RE } from "../../src/testing/acceptance-constants.js";
+import { ACCEPTANCE_MARKERS, RECALL_HEADER_RE, SLOW_TURN_DELAY_MS, SLOW_TURN_TRIGGER } from "../../src/testing/acceptance-constants.js";
 
 function lastUserText(messages: Context["messages"]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -90,7 +90,7 @@ export default function registerFakeProvider(pi: ExtensionAPI): void {
     streamSimple(model, context, options) {
       const stream = createAssistantMessageEventStream();
       const output = buildResponse(model, context, options);
-      queueMicrotask(() => {
+      const emit = () => {
         stream.push({ type: "start", partial: output });
         if (output.content[0]?.type === "toolCall") {
           stream.push({ type: "toolcall_start", contentIndex: 0, partial: output });
@@ -103,7 +103,16 @@ export default function registerFakeProvider(pi: ExtensionAPI): void {
         }
         stream.push({ type: "done", reason: output.stopReason === "toolUse" ? "toolUse" : "stop", message: output });
         stream.end();
-      });
+      };
+      // Acceptance-only knob: a prompt containing SLOW_TURN_TRIGGER holds the
+      // response open for SLOW_TURN_DELAY_MS, giving a PTY-driven acceptance
+      // step a real wall-clock window to queue a steer/followUp message while
+      // this turn is still streaming. Every other prompt resolves immediately.
+      if (lastUserText(context.messages).includes(SLOW_TURN_TRIGGER)) {
+        setTimeout(emit, SLOW_TURN_DELAY_MS);
+      } else {
+        queueMicrotask(emit);
+      }
       return stream;
     },
   });

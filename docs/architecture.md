@@ -89,8 +89,10 @@ ctx.mode === "tui"
 ### Recall path
 
 ```text
-before_agent_start for a real user prompt
-  → enforce TUI/session/per-turn gate
+input for an ordinary user prompt
+  → allocate a bounded, in-memory per-Session input identity without retaining the prompt body
+before_agent_start for that prompt
+  → atomically claim the input identity and enforce TUI/session/per-input gate
   → resolve Profile and optional Project scopes
   → query eligible banks with timeout/cancellation
   → reject expired/sensitive/out-of-scope/conflicting records
@@ -102,7 +104,9 @@ before_agent_start for a real user prompt
 
 Pi 0.85.1 allows `before_agent_start` to return a turn-specific `systemPrompt`. When omitted on the next turn Pi resets to the base prompt, so this avoids persisting recall as a Session message. The handler starts from `event.systemPrompt` (which includes earlier extension changes) and appends its block, preserving extension composition order. Returning `message`, or calling `sendMessage`, would persist memory content and is not used for recall injection.
 
-Recall must be guarded by a logical user-turn key, not tool-loop count. Follow-up user messages are new turns. Steering recalls only if a deterministic material-change check passes. Failures are swallowed after a short redacted warning.
+Recall must be guarded by a logical ordinary-user-input key, not `turn_start.turnIndex` or tool-loop count. Pi 0.85.1 emits `before_agent_start` before `turn_start`, so model-turn state cannot gate first-prompt Recall. The public `input` event supplies ordinary-input identity; `before_agent_start` atomically claims it before asynchronous work. A bounded Session-leaf-plus-prompt-hash fallback covers supported paths that reach `before_agent_start` without `input`, without retaining prompt bodies. Later separately submitted ordinary inputs are new identities even when their text is identical. Failures are swallowed after a short redacted warning and are not retried for the same identity.
+
+Pi 0.85.1 queues streaming `steer` and `followUp` user messages inside the existing Agent loop and does not emit a new `before_agent_start` when they are delivered. The Extension classifies these inputs but does not separately Recall for them, persist Recall as a message, modify Pi internals, or consume the next ordinary input's eligibility. Full queued-message Recall is deferred until a supported per-user-message turn-specific injection hook exists. See `docs/decisions/automatic-recall-turn-gating.md`.
 
 Precedence:
 

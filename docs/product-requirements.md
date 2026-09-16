@@ -101,8 +101,9 @@ A project without `enabled: true` receives no Project recall, extraction, creati
 - Interactive Pi mode only.
 - Profile recall works in ordinary directories and projects regardless of Project Memory enablement, unless the Session is paused.
 - Project recall works only when `.pi/memory.json` has `enabled: true` and project identity resolves.
-- At most one automatic recall per new user turn; tool loops do not recall again.
-- Follow-up messages are new turns. Steering may recall again only when it materially changes the task.
+- At most one automatic recall per separately submitted ordinary user input; tool loops, retries, and compaction retries do not recall again. Recall identity is derived from user-input lifecycle, not the later `turn_start.turnIndex` model-execution event.
+- A later ordinary follow-up after the current run settles is a new eligible input, even when its text is identical to an earlier input.
+- On Pi 0.85.1, user messages queued during streaming as `steer` or `followUp` are delivered inside the existing Agent loop without a new `before_agent_start` hook. They do not receive separate automatic Recall in this release and must not cause duplicate Recall or consume the next ordinary input's eligibility. Full queued-message Recall requires a future supported per-user-message, turn-specific injection hook.
 - Default injected budget: no more than 10 records and approximately 1,500 tokens total.
 - Successful injection shows a short notification. No-match is silent. `/memory last` explains retrieval, filtering, injection, token usage, and latency.
 - Recalled memory is clearly delimited as untrusted reference data and is injected through a turn-specific system-prompt extension, not a persistent Session message.

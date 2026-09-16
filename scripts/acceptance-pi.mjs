@@ -13,7 +13,7 @@ import {
   writeGlobalMemoryConfig,
   writeProjectMemoryConfig,
 } from "../dist/testing/acceptance-helpers.js";
-import { ACCEPTANCE_MARKERS, RECALL_HEADERS, RECALL_HEADER_RE } from "../dist/testing/acceptance-constants.js";
+import { ACCEPTANCE_MARKERS, RECALL_HEADERS, RECALL_HEADER_RE, SLOW_TURN_TRIGGER } from "../dist/testing/acceptance-constants.js";
 import { startMockHindsightServer } from "../dist/testing/mock-hindsight.js";
 
 const execFileAsync = promisify(execFile);
@@ -100,6 +100,8 @@ function ensureRequiredSuccess(evidence) {
     "explicitRememberRetained",
     "explicitUpdateReusedDocument",
     "recallInjectedWithoutPersistedRecallMessage",
+    "laterInputSeparatelyEligibleForRecall",
+    "queuedInputDoesNotPolluteRecall",
     "forgetVerified",
     "memoryIdSurfaced",
     "memoryListShowWorked",
@@ -361,6 +363,8 @@ const evidence = {
   explicitRememberRetained: false,
   explicitUpdateReusedDocument: false,
   recallInjectedWithoutPersistedRecallMessage: false,
+  laterInputSeparatelyEligibleForRecall: false,
+  queuedInputDoesNotPolluteRecall: false,
   forgetVerified: false,
   memoryIdSurfaced: false,
   memoryListShowWorked: false,
@@ -639,23 +643,36 @@ try {
   }
 
   const beforeRecallFiles = new Set(await listSessionFiles(paths.sessionDir));
-  const beforeRecallRouteCount = countRoutes(server.journal, "recall");
+  const beforeFirstRecallRouteCount = countRoutes(server.journal, "recall");
   const recallSession = await runPtySession(
     ["pi", ...baseArgs, "--name", "acceptance-recall"],
     env,
     paths.projectDir,
     [
       { input: "\r", expect: "Press ctrl+o", timeoutMs: 7000 },
-      { input: "first warmup question\r", expect: `${ACCEPTANCE_MARKERS.promptRecallSeen}false`, timeoutMs: 7000 },
+      // Proves the very first prompt in a brand new session gets automatic
+      // Recall directly: no warmup turn is needed to prime `turn_start`
+      // first, since Recall now gates on the `input` event instead.
       { input: "What should I remember?\r", expect: `${ACCEPTANCE_MARKERS.promptRecallSeen}true`, timeoutMs: 7000 },
       { input: "/accept-probe recall\r", expect: `${ACCEPTANCE_MARKERS.recall}true`, timeoutMs: 7000 },
+      // A later, independently-submitted input -- even identical text -- is
+      // its own separately eligible Recall attempt, not a dedup of the
+      // first. Waited on a fixed delay rather than `expect`, because the
+      // marker text this step waits for already appears in the transcript
+      // from the prior step and would match instantly without proving
+      // anything; the real proof is the server-side recall route count
+      // asserted below.
+      { input: "What should I remember?\r", waitBeforeMs: 1500 },
       { input: "/quit\r", timeoutMs: 6000 },
     ],
-    18000,
+    22000,
   );
   failure.recallSession = redactText(recallSession.output, paths);
-  const afterRecallRouteCount = countRoutes(server.journal, "recall");
-  assert(afterRecallRouteCount - beforeRecallRouteCount === 1, "expected exactly one recall route for the recalled turn");
+  const afterFirstRecallRouteCount = countRoutes(server.journal, "recall");
+  assert(
+    afterFirstRecallRouteCount - beforeFirstRecallRouteCount === 2,
+    `expected exactly two recall routes (no-warmup first prompt, then a later identical-text separate input): before=${beforeFirstRecallRouteCount} after=${afterFirstRecallRouteCount}`,
+  );
   const afterRecallFiles = await listSessionFiles(paths.sessionDir);
   const newRecallFiles = afterRecallFiles.filter((file) => !beforeRecallFiles.has(file));
   assert(newRecallFiles.length === 1, "expected exactly one new session file for named recall run");
@@ -664,6 +681,45 @@ try {
     recallSession.output.includes(`${ACCEPTANCE_MARKERS.promptRecallSeen}true`) &&
     recallSession.output.includes(`${ACCEPTANCE_MARKERS.recall}true`) &&
     sessionContainsRecall(recallEntries) === false;
+  evidence.laterInputSeparatelyEligibleForRecall = afterFirstRecallRouteCount - beforeFirstRecallRouteCount === 2;
+
+  const beforeSteerRecallRouteCount = countRoutes(server.journal, "recall");
+  const steerSession = await runPtySession(
+    ["pi", ...baseArgs, "--name", "acceptance-steer"],
+    env,
+    paths.projectDir,
+    [
+      { input: "\r", expect: "Press ctrl+o", timeoutMs: 7000 },
+      // The trigger phrase makes the fake provider hold this turn's response
+      // open for ~2.5s so the next step below can reach Pi while the agent
+      // loop is still streaming.
+      { input: `${SLOW_TURN_TRIGGER} primary input\r` },
+      // A plain Enter submitted while the agent is streaming is queued by
+      // Pi's TUI as a `steer` message (not a new idle submission), and must
+      // not trigger its own Recall attempt nor duplicate the primary
+      // input's. `waitBeforeMs` runs before writing *this* step's input, so
+      // it is what actually creates the delay between submitting the
+      // primary prompt and submitting the steer -- placing it on the
+      // primary step instead (as an earlier revision of this test did)
+      // would wait before the primary prompt itself and race the steer text
+      // in immediately afterward, before Pi's `isStreaming` flips true.
+      { input: "queued steer message\r", waitBeforeMs: 700, expect: `${ACCEPTANCE_MARKERS.promptRecallSeen}true`, timeoutMs: 9000 },
+      { input: "/accept-probe recall\r", expect: `${ACCEPTANCE_MARKERS.recall}true`, timeoutMs: 7000 },
+      // The next genuinely new, idle-submitted input must still be
+      // separately eligible for its own Recall -- the queued steer must not
+      // have consumed or polluted its eligibility.
+      { input: "What should I remember?\r", waitBeforeMs: 1500 },
+      { input: "/quit\r", timeoutMs: 6000 },
+    ],
+    25000,
+  );
+  failure.steerSession = redactText(steerSession.output, paths);
+  const afterSteerRecallRouteCount = countRoutes(server.journal, "recall");
+  assert(
+    afterSteerRecallRouteCount - beforeSteerRecallRouteCount === 2,
+    `expected exactly two recall routes across the steer scenario (primary input, then the later idle follow-up) -- a queued steer must never add its own: before=${beforeSteerRecallRouteCount} after=${afterSteerRecallRouteCount}`,
+  );
+  evidence.queuedInputDoesNotPolluteRecall = afterSteerRecallRouteCount - beforeSteerRecallRouteCount === 2;
 
   const candidateCreation = await runPtySession(
     ["pi", ...baseArgs, "--name", "acceptance-candidate"],
@@ -671,7 +727,15 @@ try {
     paths.projectDir,
     [
       { input: "\r", expect: "Press ctrl+o", timeoutMs: 7000 },
-      { input: "candidate warmup turn\r", expect: `${ACCEPTANCE_MARKERS.promptRecallSeen}false`, timeoutMs: 7000 },
+      // This is the first prompt of a fresh named session, and the
+      // "Prefer concise answers and short summaries." memory from
+      // updateSession is still active at this point in the script (it is
+      // not forgotten until forgetSession, further below) -- so, now that
+      // first-prompt Recall works with no warmup needed, this legitimately
+      // recalls it. The turn's only real purpose is still to give the
+      // extraction pipeline a prior turn before the material-bearing prompt
+      // below.
+      { input: "candidate warmup turn\r", expect: `${ACCEPTANCE_MARKERS.promptRecallSeen}true`, timeoutMs: 7000 },
       { input: "please remember this durable preference for future chats\r", expect: ACCEPTANCE_MARKERS.promptRecallSeen, timeoutMs: 7000 },
       { input: "/quit\r", timeoutMs: 6000 },
     ],

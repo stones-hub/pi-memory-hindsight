@@ -4,7 +4,7 @@ import { handleAgentEnd, handleAgentSettled } from "./extraction/extraction-serv
 import { registerMemoryRememberTool } from "./tools/memory-remember-tool.js";
 import { handleBeforeAgentStart } from "./recall/recall-service.js";
 import { restoreSessionMemoryState } from "./runtime/session-persistence.js";
-import { noteTurnStart, peekSessionState, shutdownSessionState } from "./runtime/session-runtime.js";
+import { noteInputEvent, noteTurnStart, peekSessionState, shutdownSessionState } from "./runtime/session-runtime.js";
 
 function swallowSync(fn: () => void): void {
   try {
@@ -34,6 +34,13 @@ const extension: ExtensionFactory = (pi: ExtensionAPI) => {
     if (ctx.mode !== "tui") return;
     swallowSync(() => {
       restoreSessionMemoryState(ctx.sessionManager);
+    });
+  });
+
+  pi.on("input", (event, ctx) => {
+    if (ctx.mode !== "tui") return;
+    swallowSync(() => {
+      noteInputEvent(ctx.sessionManager.getSessionId(), event);
     });
   });
 

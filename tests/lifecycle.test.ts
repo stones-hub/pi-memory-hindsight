@@ -21,9 +21,11 @@ import { estimateTokens } from "../src/recall/token-budget.js";
 import { profileBankId, projectBankId } from "../src/identity/bank-id.js";
 import {
   getSessionState,
+  noteInputEvent,
   noteTurnStart,
   peekSessionState,
   resetAllSessionStateForTests,
+  setSessionMemoryOff,
   shutdownSessionState,
 } from "../src/runtime/session-runtime.js";
 
@@ -111,6 +113,7 @@ function makeContext(overrides: Partial<any> = {}) {
     cwd: overrides.cwd ?? "/repo",
     sessionManager: {
       getSessionId: () => sessionId,
+      getLeafId: () => overrides.leafId ?? null,
       getBranch: () => branch,
       getEntries: () => branch,
     },
@@ -149,6 +152,14 @@ function sha256(text: string): string {
   return createHash("sha256").update(text.trim()).digest("hex");
 }
 
+function noteOrdinaryInput(sessionId: string, text = "question"): void {
+  noteInputEvent(sessionId, { type: "input", text, source: "interactive" });
+}
+
+function noteQueuedInput(sessionId: string, streamingBehavior: "steer" | "followUp", text = "queued"): void {
+  noteInputEvent(sessionId, { type: "input", text, source: "interactive", streamingBehavior });
+}
+
 describe("extension entrypoint and session state", () => {
   beforeEach(() => {
     resetAllSessionStateForTests();
@@ -166,6 +177,7 @@ describe("extension entrypoint and session state", () => {
       "agent_end",
       "agent_settled",
       "before_agent_start",
+      "input",
       "session_shutdown",
       "session_start",
       "turn_start",
@@ -218,19 +230,21 @@ describe("extension entrypoint and session state", () => {
     expect(getSessionState("a").memoryOff).toBe(false);
   });
 
-  it("registered session_start and turn_start do no work outside tui, and shutdown does not create state", async () => {
+  it("registered session_start, input, and turn_start do no work outside tui, and shutdown does not create state", async () => {
     const handlers = new Map<string, Function>();
     extension({ on: (event: string, handler: Function) => handlers.set(event, handler) } as any);
     const sessionStart = handlers.get("session_start");
+    const input = handlers.get("input");
     const turnStart = handlers.get("turn_start");
     const shutdown = handlers.get("session_shutdown");
-    if (!sessionStart || !turnStart || !shutdown) throw new Error("missing handlers");
+    if (!sessionStart || !input || !turnStart || !shutdown) throw new Error("missing handlers");
 
     for (const mode of ["print", "json", "rpc"] as const) {
       const sessionId = `non-tui-${mode}`;
       expect(peekSessionState(sessionId)).toBeUndefined();
       const ctx = makeContext({ mode, sessionId });
       await sessionStart({ type: "session_start", reason: "startup" }, ctx);
+      await input({ type: "input", text: "hello", source: "interactive" }, ctx);
       await turnStart({ type: "turn_start", turnIndex: 1, timestamp: Date.now() }, ctx);
       await shutdown({ type: "session_shutdown", reason: "quit" }, ctx);
       expect(peekSessionState(sessionId)).toBeUndefined();
@@ -263,7 +277,7 @@ describe("automatic recall lifecycle", () => {
     resolveProjectBankMock.mockReset();
   });
 
-  it("recalls at most once per turn, then allows the next turn, with project results ranked before profile", async () => {
+  it("recalls at most once per ordinary input, then allows the next input, with project results ranked before profile", async () => {
     const runtime = makeRuntime();
     runtime.profile.language = "zh";
     const profileText = "Prefer concise answers.";
@@ -374,7 +388,7 @@ describe("automatic recall lifecycle", () => {
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: projectIdentity, bankId: projectBankId(projectIdentity) });
 
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     const ctx = makeContext();
     const result1 = await handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "How do I run tests?", systemPrompt: "BASE", systemPromptOptions: {} as any },
@@ -398,7 +412,7 @@ describe("automatic recall lifecycle", () => {
     expect(result2).toBeUndefined();
     expect(runtime.adapter.recall).toHaveBeenCalledTimes(2);
 
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 2, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     await handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "And build?", systemPrompt: "BASE", systemPromptOptions: {} as any },
       ctx as any,
@@ -463,7 +477,7 @@ describe("automatic recall lifecycle", () => {
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: projectIdentity, bankId: projectBankId(projectIdentity) });
 
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     const result = await handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "question", systemPrompt: "BASE", systemPromptOptions: {} as any },
       makeContext() as any,
@@ -471,7 +485,7 @@ describe("automatic recall lifecycle", () => {
     expect(result).toBeUndefined();
   });
 
-  it("atomically claims a turn before awaits so concurrent calls and same-turn failures do not retry, but a new turn can", async () => {
+  it("atomically claims an input before awaits so concurrent calls and same-input retries do not retry, but a new input can", async () => {
     const runtime = makeRuntime();
     let release!: () => void;
     runtime.adapter.recall.mockImplementation(
@@ -483,7 +497,7 @@ describe("automatic recall lifecycle", () => {
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
 
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     const ctx = makeContext();
     const p1 = handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "question", systemPrompt: "BASE", systemPromptOptions: {} as any },
@@ -510,7 +524,7 @@ describe("automatic recall lifecycle", () => {
     );
     expect(getGlobalRuntimeMock).toHaveBeenCalledTimes(1);
 
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 2, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     await handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "question", systemPrompt: "BASE", systemPromptOptions: {} as any },
@@ -531,7 +545,7 @@ describe("automatic recall lifecycle", () => {
     );
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
 
     const ctx = makeContext();
     const pending = handleBeforeAgentStart(
@@ -593,7 +607,7 @@ describe("automatic recall lifecycle", () => {
     });
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: projectIdentity, bankId: projectBankId(projectIdentity) });
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
 
     const result = await handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "question", systemPrompt: "BASE", systemPromptOptions: {} as any },
@@ -628,7 +642,7 @@ describe("automatic recall lifecycle", () => {
     });
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     resolveProjectBankMock.mockResolvedValue({ enabled: true, identity: projectIdentity, bankId: projectBankId(projectIdentity) });
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
 
     runtime.adapter.recall.mockResolvedValue({
       ok: true,
@@ -659,7 +673,7 @@ describe("automatic recall lifecycle", () => {
       ),
     ).toBeUndefined();
 
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 2, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     runtime.adapter.recall.mockResolvedValue({
       ok: true,
       value: [{
@@ -707,7 +721,7 @@ describe("automatic recall lifecycle", () => {
     const row = runtime.repos.memories.listActive("profile", null)[0]!;
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     runtime.adapter.recall.mockResolvedValue({
       ok: true,
       value: [{
@@ -791,7 +805,7 @@ describe("automatic recall lifecycle", () => {
     });
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     const result = await handleBeforeAgentStart(
       { type: "before_agent_start", prompt: "question", systemPrompt: "BASE", systemPromptOptions: {} as any },
       makeContext() as any,
@@ -843,7 +857,7 @@ describe("automatic recall lifecycle", () => {
 
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     runtime.adapter.recall.mockResolvedValue({
       ok: true,
       value: [{
@@ -863,7 +877,7 @@ describe("automatic recall lifecycle", () => {
     );
     expect(accepted?.systemPrompt).toContain(text);
 
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 2, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     runtime.adapter.recall.mockResolvedValue({
       ok: true,
       value: [{
@@ -884,7 +898,7 @@ describe("automatic recall lifecycle", () => {
       ),
     ).toBeUndefined();
 
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 3, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     runtime.adapter.recall.mockResolvedValue({
       ok: true,
       value: [{
@@ -912,7 +926,7 @@ describe("automatic recall lifecycle", () => {
     const projectCreated = new Date(Date.now() - 60_000).toISOString();
     const projectUpdated = new Date(Date.now() - 30_000).toISOString();
     const projectExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 4, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     resolveProjectBankMock.mockResolvedValue({
       enabled: true,
       identity: projectIdentity,
@@ -1001,7 +1015,7 @@ describe("automatic recall lifecycle", () => {
 
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
     resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
-    noteTurnStart("session-1", { type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+    noteOrdinaryInput("session-1");
     runtime.adapter.recall.mockResolvedValue({
       ok: true,
       value: [{
@@ -1029,6 +1043,232 @@ describe("automatic recall lifecycle", () => {
       makeContext() as any,
     );
     expect(accepted?.systemPrompt).toContain(updated);
+  });
+
+  it("recalls on the first prompt of a fresh Session, before any turn_start has been observed, matching Pi's real input -> before_agent_start -> turn_start order", async () => {
+    const runtime = makeRuntime();
+    const text = "Prefer concise answers.";
+    const written = await remember(runtime as any, {
+      scope: "profile",
+      memoryType: "preference",
+      text,
+      cwd: "/repo",
+      sourceSessionId: "session-1",
+      sourceRef: "turn:1",
+      owner: "command",
+    });
+    expect(written.outcome).toBe("written");
+    const row = runtime.repos.memories.listActive("profile", null)[0]!;
+    runtime.adapter.recall.mockResolvedValue({
+      ok: true,
+      value: [{
+        id: "1",
+        text,
+        type: "world",
+        documentId: row.document_id,
+        metadata: {
+          logical_id: row.id,
+          content_hash: row.text_hash,
+          scope: "profile",
+          memory_type: "preference",
+          verification_state: row.verification_state,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+          last_verified_at: row.last_verified_at!,
+        },
+        tags: null,
+        context: null,
+        mentionedAt: null,
+      }],
+    });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+
+    expect(peekSessionState("session-1")).toBeUndefined();
+    noteOrdinaryInput("session-1", "What are my preferences?");
+    const result = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "What are my preferences?", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(result?.systemPrompt).toContain(text);
+    // No turn_start was ever noted for this session, proving the claim did not depend on it.
+    expect(getSessionState("session-1").currentTurnIndex).toBeNull();
+  });
+
+  it("falls back to a leaf+prompt-hash identity when before_agent_start is reached without an observed input event, staying stable for same-leaf retries but changing across leaves", async () => {
+    const runtime = makeRuntime();
+    runtime.adapter.recall.mockResolvedValue({ ok: true, value: [] });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+
+    const ctxLeafA = makeContext({ leafId: "leaf-a" });
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "no input event seen", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      ctxLeafA as any,
+    );
+    expect(runtime.adapter.recall).toHaveBeenCalledTimes(1);
+
+    // Same leaf, identical prompt, no new input event observed: this must be treated as a retry
+    // of the same request, not a new one.
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "no input event seen", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      ctxLeafA as any,
+    );
+    expect(runtime.adapter.recall).toHaveBeenCalledTimes(1);
+
+    // A later completed turn advances the Session leaf, so identical text is eligible again.
+    const ctxLeafB = makeContext({ leafId: "leaf-b" });
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "no input event seen", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      ctxLeafB as any,
+    );
+    expect(runtime.adapter.recall).toHaveBeenCalledTimes(2);
+  });
+
+  it("noteInputEvent classifies queued steer/followUp inputs without creating or overwriting the pending ordinary input", () => {
+    noteOrdinaryInput("session-1", "ordinary one");
+    const afterOrdinary = getSessionState("session-1").pendingOrdinaryInput;
+    expect(afterOrdinary?.sequence).toBe(1);
+
+    noteQueuedInput("session-1", "steer");
+    noteQueuedInput("session-1", "followUp");
+
+    const state = getSessionState("session-1");
+    expect(state.pendingOrdinaryInput).toEqual(afterOrdinary);
+    expect(state.inputSequence).toBe(1);
+  });
+
+  it("queued steer/followUp inputs do not duplicate the preceding recall or consume the next ordinary input's eligibility", async () => {
+    const runtime = makeRuntime();
+    runtime.adapter.recall.mockResolvedValue({ ok: true, value: [] });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+    const ctx = makeContext();
+
+    noteOrdinaryInput("session-1", "first question");
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "first question", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      ctx as any,
+    );
+    expect(runtime.adapter.recall).toHaveBeenCalledTimes(1);
+
+    // A queued steer message never gets its own before_agent_start in real Pi; simulate a
+    // tool-loop continuation re-entering before_agent_start for the same run to prove the
+    // queued input did not open a new claim for it.
+    noteQueuedInput("session-1", "steer", "steer message");
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "first question", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      ctx as any,
+    );
+    expect(runtime.adapter.recall).toHaveBeenCalledTimes(1);
+
+    noteQueuedInput("session-1", "followUp", "follow-up message");
+
+    // The next genuinely new ordinary input still gets its own Recall attempt.
+    noteOrdinaryInput("session-1", "second question");
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "second question", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      ctx as any,
+    );
+    expect(runtime.adapter.recall).toHaveBeenCalledTimes(2);
+  });
+
+  it("/memory off skips provider recall, and the next newly submitted input recalls normally after /memory on", async () => {
+    const runtime = makeRuntime();
+    runtime.adapter.recall.mockResolvedValue({ ok: true, value: [] });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+
+    setSessionMemoryOff("session-1", true);
+    noteOrdinaryInput("session-1");
+    const whileOff = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "question", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(whileOff).toBeUndefined();
+    expect(runtime.adapter.recall).not.toHaveBeenCalled();
+    expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+
+    setSessionMemoryOff("session-1", false);
+    noteOrdinaryInput("session-1");
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "next question", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(runtime.adapter.recall).toHaveBeenCalledTimes(1);
+  });
+
+  it("claims an off input's identity immediately so a later duplicate before_agent_start for that same input never retroactively recalls once /memory is turned back on", async () => {
+    const runtime = makeRuntime();
+    runtime.adapter.recall.mockResolvedValue({ ok: true, value: [] });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+
+    setSessionMemoryOff("session-1", true);
+    noteOrdinaryInput("session-1", "old question");
+
+    // First callback for the off input: zero runtime/provider I/O.
+    const first = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "old question", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(first).toBeUndefined();
+    expect(runtime.adapter.recall).not.toHaveBeenCalled();
+    expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+
+    // A duplicate before_agent_start for the same still-unsettled input (e.g. tool-loop or
+    // retry re-entry) while still off: still zero I/O.
+    const second = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "old question", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(second).toBeUndefined();
+    expect(runtime.adapter.recall).not.toHaveBeenCalled();
+    expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+
+    // Memory comes back on, but no new input was submitted: the pending input identity is
+    // still the same already-claimed "old question". A late duplicate callback for it
+    // (e.g. a delayed retry landing after the user flips /memory on) must not retroactively
+    // recall.
+    setSessionMemoryOff("session-1", false);
+    const third = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "old question", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(third).toBeUndefined();
+    expect(runtime.adapter.recall).not.toHaveBeenCalled();
+    expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+
+    // Only a genuinely new, separately submitted ordinary input is eligible for Recall.
+    noteOrdinaryInput("session-1", "new question");
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "new question", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(runtime.adapter.recall).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not share input sequence or claimed recall identities across sessions", async () => {
+    const runtime = makeRuntime();
+    runtime.adapter.recall.mockResolvedValue({ ok: true, value: [] });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+
+    noteInputEvent("session-a", { type: "input", text: "hi", source: "interactive" });
+    noteInputEvent("session-b", { type: "input", text: "hi", source: "interactive" });
+    expect(getSessionState("session-a").pendingOrdinaryInput?.inputKey).not.toBe(
+      getSessionState("session-b").pendingOrdinaryInput?.inputKey,
+    );
+
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "hi", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext({ sessionId: "session-a" }) as any,
+    );
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "hi", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext({ sessionId: "session-b" }) as any,
+    );
+    expect(runtime.adapter.recall).toHaveBeenCalledTimes(2);
   });
 
   it("does nothing in non-tui modes", async () => {

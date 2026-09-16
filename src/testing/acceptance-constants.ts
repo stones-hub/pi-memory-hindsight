@@ -17,3 +17,12 @@ export const ACCEPTANCE_MARKERS = {
   promptRecallSeen: "ACCEPT_FAKE_PROVIDER saw_recall=",
   printNoRecall: "ACCEPT_FAKE_PROVIDER saw_recall=false",
 } as const;
+
+/**
+ * Included in a prompt to make the fake provider delay its response
+ * (see `tests/e2e-harness/fake-provider.ts`), opening a real wall-clock
+ * window for a PTY-driven acceptance step to queue a `steer`/`followUp`
+ * message while the agent loop is still streaming.
+ */
+export const SLOW_TURN_TRIGGER = "SLOW_TURN_FOR_STEER_TEST";
+export const SLOW_TURN_DELAY_MS = 2500;

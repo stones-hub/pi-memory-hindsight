@@ -16,7 +16,7 @@
 import { createHash } from "node:crypto";
 import type { BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getGlobalRuntime, type GlobalRuntime } from "../runtime/global-runtime.js";
-import { getSessionState, isSessionStateCurrent, tryClaimRecallRun } from "../runtime/session-runtime.js";
+import { isSessionStateCurrent, tryClaimRecallInput } from "../runtime/session-runtime.js";
 import { resolveProjectBank } from "../runtime/project-runtime.js";
 import { capRenderedRecallItems } from "./token-budget.js";
 import { normalizeLanguage, t } from "../i18n/messages.js";
@@ -324,9 +324,14 @@ export async function handleBeforeAgentStart(
   if (ctx.mode !== "tui") return;
 
   const sessionId = ctx.sessionManager.getSessionId();
-  if (getSessionState(sessionId).memoryOff) return;
-  const claim = tryClaimRecallRun(sessionId);
+  // Claim the input identity before any memoryOff check (and before any
+  // await): an off input must still be consumed here so that a later
+  // duplicate before_agent_start callback for the same input — reached
+  // after memory is switched back on — finds the identity already claimed
+  // and does not retroactively Recall for it.
+  const claim = tryClaimRecallInput(sessionId, { leafId: ctx.sessionManager.getLeafId(), prompt: event.prompt });
   if (!claim) return;
+  if (claim.state.memoryOff) return;
 
   const query = truncateUnicode(typeof event.prompt === "string" ? event.prompt.trim() : "", MAX_QUERY_CHARS);
   if (!query) return;

@@ -14,7 +14,7 @@
 2. 用 `/memory candidates` 审阅、批准或拒绝 Candidate；批准后才会写入 Hindsight 正式记忆。
 3. 若你明确想记住某条内容，用 `/memory remember ...` 或自然语言让 Pi 调用 `memory_remember`，这是直接写入正式记忆的路径。
 
-> 当前版本适配 Pi `0.85.1`、Hindsight API `0.8.3`，需要 Node.js `>=22.19.0`。当前实现已通过 340 项自动化测试、打包后的隔离 Pi 验收、一次性 Bank 的真实 Hindsight 0.8.3 验收，以及真实 Pi 中临时 Memory 的创建、查看、同 ID 更新和精确删除测试。
+> 当前版本适配 Pi `0.85.1`、Hindsight API `0.8.3`，需要 Node.js `>=22.19.0`。当前实现已通过 353 项自动化测试、打包后的隔离 Pi 验收、一次性 Bank 的真实 Hindsight 0.8.3 验收，以及真实 Pi 中临时 Memory 的创建、查看、同 ID 更新和精确删除测试。
 
 ---
 
@@ -676,7 +676,7 @@ pi update --extensions
 pi update --all
 ```
 
-需要固定到当前正式版本时，可使用：`pi install https://github.com/stones-hub/pi-memory-hindsight.git@v0.2.2`。需要固定到首个正式版本时，可使用 `@v0.1.0`。直接使用不带 `@ref` 的仓库 URL，则跟随默认分支。
+需要固定到当前正式版本时，可使用：`pi install https://github.com/stones-hub/pi-memory-hindsight.git@v0.2.3`。需要固定到首个正式版本时，可使用 `@v0.1.0`。直接使用不带 `@ref` 的仓库 URL，则跟随默认分支。
 
 ### 卸载
 
@@ -802,7 +802,7 @@ npm run acceptance:pi
 npm run acceptance:git-install
 ```
 
-`npm test` 当前包含 **340** 项测试（含 loopback `pi install` git 验收）。`npm pack --dry-run` 当前打包 **67** 个文件（含根目录 `LICENSE`）。
+`npm test` 当前包含 **18** 个文件 / **353** 项测试（含 loopback `pi install` git 验收）。`npm pack --dry-run` 当前打包 **69** 个文件（含根目录 `LICENSE`）。
 
 真实 Hindsight 验收脚本只允许使用由随机 nonce 派生的全新临时 Project Bank，不应针对已有 Bank 运行。脚本默认拒绝执行，必须显式提供安全开关、loopback 地址、预期 API 版本、nonce 和与 nonce 匹配的 Bank ID；无论主流程成功或失败，都会尝试删除该临时 Bank。完整运行方式和环境变量见 [`docs/acceptance.md`](docs/acceptance.md)。
 
