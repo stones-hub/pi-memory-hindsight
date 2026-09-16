@@ -18,7 +18,7 @@
 
 - 执行器：Claude Code
 - 请求模型：`claude-sonnet-5`
-- 编码授权：已在对话中由用户明确授予（覆盖本文件此前"未获得"的记录；授权本身未产生单独的书面文档，以当次对话记录为准）。实现、Pi 独立 diff 检查、受影响测试、完整 `npm test`、typecheck、build、`npm audit --omit=dev`、`npm pack --dry-run --json`、`git diff --check`、NUL 字节扫描，以及隔离 packaged Pi 黑盒验收均已通过；尚未提交（commit/push/发布/部署）。首次全新 Claude Code 独立复审仅因交接未明确区分 real-PTY 与单元测试证据而返回 FAIL，未发现核心功能或安全缺陷；披露修正后，第二个全新（非 resume）Claude Code 复审会话已返回 PASS。
+- 编码与发布授权：均已在对话中由用户明确授予。实现、Pi 独立 diff 检查、受影响测试、完整 `npm test`、typecheck、build、`npm audit --omit=dev`、`npm pack --dry-run --json`、`git diff --check`、NUL 字节扫描，以及隔离 packaged Pi 黑盒验收均已通过。首次全新 Claude Code 独立复审仅因交接未明确区分 real-PTY 与单元测试证据而返回 FAIL，未发现核心功能或安全缺陷；披露修正后，第二个全新（非 resume）Claude Code 复审会话返回 PASS。实现提交 `977dc991c68a8139cf9c79b904cc7ed6a1d99a8c` 已推送至 `origin/main`，annotated tag `v0.2.3` 及 GitHub Release 已发布。未执行 npm-registry 发布或目标机部署。
 - 权限范围：获得后仅可在上述允许范围内调查、编码、补测试和运行本任务规定的本地隔离验证；不得 commit、push、发布、部署、修改 live 配置或访问/修改 live Memory SQLite/Hindsight 数据。
 
 # 真实业务背景
