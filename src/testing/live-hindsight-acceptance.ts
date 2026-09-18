@@ -15,10 +15,13 @@ export interface LiveAcceptanceEnv {
 export interface LiveAcceptanceEvidence {
   ok: boolean;
   routes: string[];
+  expectedApiVersion: "0.8.3" | "0.10.0";
+  negotiatedApiVersion: string | null;
   retainedDocumentId: string;
   retainedHash: string | null;
   recalledCount: number;
   recallContainedExpectedItem: boolean;
+  recallScoresValidated: boolean | null;
   bankDeleteAcknowledged: boolean;
   knownDocumentAbsenceProven: boolean;
   bankAbsenceEndpointUnavailable: boolean;
@@ -112,6 +115,7 @@ function isValidBankDeleteResponse(json: unknown): boolean {
 export function validateLiveAcceptanceEnv(env: LiveAcceptanceEnv): {
   baseUrl: string;
   bankId: string;
+  expectedApiVersion: "0.8.3" | "0.10.0";
   apiKey?: string;
 } {
   if (env.PI_MEMORY_HINDSIGHT_LIVE_ACCEPT !== "1") {
@@ -121,8 +125,9 @@ export function validateLiveAcceptanceEnv(env: LiveAcceptanceEnv): {
   if (!baseUrl || !isLoopbackHttpUrl(baseUrl)) {
     throw new Error("refusing live acceptance: PI_MEMORY_HINDSIGHT_BASE_URL must be explicit loopback http(s)");
   }
-  if (env.PI_MEMORY_HINDSIGHT_EXPECTED_API_VERSION !== "0.8.3") {
-    throw new Error("refusing live acceptance: PI_MEMORY_HINDSIGHT_EXPECTED_API_VERSION must equal 0.8.3");
+  const expectedApiVersion = env.PI_MEMORY_HINDSIGHT_EXPECTED_API_VERSION?.trim();
+  if (expectedApiVersion !== "0.8.3" && expectedApiVersion !== "0.10.0") {
+    throw new Error("refusing live acceptance: PI_MEMORY_HINDSIGHT_EXPECTED_API_VERSION must equal 0.8.3 or 0.10.0");
   }
   const nonce = env.PI_MEMORY_HINDSIGHT_LIVE_NONCE?.trim();
   const bankId = env.PI_MEMORY_HINDSIGHT_LIVE_BANK_ID?.trim();
@@ -136,16 +141,19 @@ export function validateLiveAcceptanceEnv(env: LiveAcceptanceEnv): {
   return {
     baseUrl,
     bankId,
+    expectedApiVersion,
     ...(env.HINDSIGHT_API_KEY ? { apiKey: env.HINDSIGHT_API_KEY } : {}),
   };
 }
 
 interface PrimaryFlowResult {
   routes: string[];
+  negotiatedApiVersion: string | null;
   retainedDocumentId: string;
   retainedHash: string | null;
   recalledCount: number;
   recallContainedExpectedItem: boolean;
+  recallScoresValidated: boolean | null;
 }
 
 // Retains one synthetic memory, proves recall surfaces the exact item, then
@@ -157,6 +165,7 @@ async function runPrimaryFlow(
   baseUrl: string,
   bankId: string,
   apiKey: string | undefined,
+  expectedApiVersion: "0.8.3" | "0.10.0",
   documentId: string,
   initialText: string,
   updatedText: string,
@@ -167,6 +176,12 @@ async function runPrimaryFlow(
   const compat = await adapter.checkCompatibility(AbortSignal.timeout(REQUEST_TIMEOUT_MS));
   routes.push("GET /health", "GET /version");
   if (!compat.ok) throw new Error(`live acceptance compatibility failed: ${compat.reason}`);
+  if (compat.value.apiVersion !== expectedApiVersion) {
+    throw new Error(
+      `live acceptance negotiated api_version ${compat.value.apiVersion} did not match expected ${expectedApiVersion}`,
+    );
+  }
+  const negotiatedApiVersion = adapter.getNegotiatedApiVersion();
 
   const bankCreate = await requestJson("PUT", `${baseUrl}/v1/default/banks/${encodeURIComponent(bankId)}`, apiKey, {});
   routes.push("PUT /v1/default/banks/{bankId}");
@@ -206,11 +221,20 @@ async function runPrimaryFlow(
   const recalled = await adapter.recall({ bankId, query: "Synthetic live", budget: "low", maxTokens: 200 });
   routes.push("POST /v1/default/banks/{bankId}/memories/recall");
   if (!recalled.ok) throw new Error(`live recall failed: ${recalled.reason}`);
-  const recallContainedExpectedItem = recalled.value.some(
-    (item) => item.documentId === documentId && item.text === initialText,
-  );
+  const matched = recalled.value.find((item) => item.documentId === documentId && item.text === initialText);
+  const recallContainedExpectedItem = matched !== undefined;
   if (!recallContainedExpectedItem) {
     throw new Error("live recall did not contain the exact synthetic expected item");
+  }
+
+  let recallScoresValidated: boolean | null = null;
+  if (expectedApiVersion === "0.10.0") {
+    if (!matched?.scores || typeof matched.scores.final !== "number" || !Number.isFinite(matched.scores.final)) {
+      throw new Error("live recall 0.10.0 score shape was missing or final was not a finite number");
+    }
+    recallScoresValidated = true;
+  } else {
+    recallScoresValidated = null;
   }
 
   let updatedTimestamp = new Date().toISOString();
@@ -236,10 +260,12 @@ async function runPrimaryFlow(
 
   return {
     routes,
+    negotiatedApiVersion,
     retainedDocumentId: documentId,
     retainedHash: textHash(updatedText),
     recalledCount: recalled.value.length,
     recallContainedExpectedItem,
+    recallScoresValidated,
   };
 }
 
@@ -308,7 +334,7 @@ async function runCleanup(
 }
 
 export async function runLiveHindsightAcceptance(env: LiveAcceptanceEnv): Promise<LiveAcceptanceEvidence> {
-  const { baseUrl, bankId, apiKey } = validateLiveAcceptanceEnv(env);
+  const { baseUrl, bankId, expectedApiVersion, apiKey } = validateLiveAcceptanceEnv(env);
   const adapter = new HindsightAdapter({ baseUrl, apiKey, timeoutMs: REQUEST_TIMEOUT_MS });
   const initialText = "Synthetic live acceptance memory.";
   const updatedText = "Synthetic live acceptance memory updated.";
@@ -318,7 +344,17 @@ export async function runLiveHindsightAcceptance(env: LiveAcceptanceEnv): Promis
   let primary: PrimaryFlowResult | undefined;
   let primaryError: unknown;
   try {
-    primary = await runPrimaryFlow(adapter, baseUrl, bankId, apiKey, documentId, initialText, updatedText, projectIdentity);
+    primary = await runPrimaryFlow(
+      adapter,
+      baseUrl,
+      bankId,
+      apiKey,
+      expectedApiVersion,
+      documentId,
+      initialText,
+      updatedText,
+      projectIdentity,
+    );
   } catch (error) {
     primaryError = error;
   }
@@ -342,10 +378,13 @@ export async function runLiveHindsightAcceptance(env: LiveAcceptanceEnv): Promis
   return {
     ok: true,
     routes: [...primaryResult.routes, ...cleanupResult.routes],
+    expectedApiVersion,
+    negotiatedApiVersion: primaryResult.negotiatedApiVersion,
     retainedDocumentId: primaryResult.retainedDocumentId,
     retainedHash: primaryResult.retainedHash,
     recalledCount: primaryResult.recalledCount,
     recallContainedExpectedItem: primaryResult.recallContainedExpectedItem,
+    recallScoresValidated: primaryResult.recallScoresValidated,
     bankDeleteAcknowledged: cleanupResult.bankDeleteAcknowledged,
     knownDocumentAbsenceProven: cleanupResult.knownDocumentAbsenceProven,
     bankAbsenceEndpointUnavailable: cleanupResult.bankAbsenceEndpointUnavailable,

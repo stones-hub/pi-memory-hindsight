@@ -433,6 +433,65 @@ describe("slice 4 governance commands and tools", () => {
     expect(getSessionState("b").memoryOff).toBe(false);
   });
 
+  it("renders /memory last score diagnostics without persisting scores or bodies through appendEntry", async () => {
+    const { commands, appendEntry } = captureExtension();
+    const command = commands.get("memory");
+    const runtime = makeRuntime();
+    runtime.profile.language = "en";
+    peekCachedLocalRuntimeMock.mockReturnValue({ ok: true, runtime });
+    getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+
+    const scoredText = "Prefer concise answers.";
+    const unscoredText = "Use Vitest.";
+    getSessionState("session-1").lastRecall = {
+      injectedAt: "2026-09-18T00:00:00.000Z",
+      promptPreview: "how?",
+      items: [
+        {
+          scope: "profile",
+          memoryType: "preference",
+          text: scoredText,
+          memoryId: "mem-scored",
+          readOnlyShared: false,
+          scores: {
+            final: 1.0986786712451455,
+            reranker: null,
+            semantic: 0.8,
+            keyword: null,
+          },
+        },
+        {
+          scope: "project",
+          memoryType: "decision",
+          text: unscoredText,
+          memoryId: "mem-plain",
+          readOnlyShared: false,
+          scores: null,
+        },
+      ],
+    };
+
+    appendEntry.mockClear();
+    const ctx = makeContext({ sessionId: "session-1" });
+    await command.handler("last", ctx);
+
+    expect(appendEntry).not.toHaveBeenCalled();
+    expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
+    const rendered = String(ctx.ui.notify.mock.calls[0]![0]);
+    expect(rendered).toContain(scoredText);
+    expect(rendered).toContain(
+      "scores(final=1.0986786712451455, reranker=null, semantic=0.8, keyword=null)",
+    );
+    expect(rendered).toContain(unscoredText);
+    const plainLine = rendered
+      .split("\n")
+      .find((line: string) => line.includes("mem-plain"));
+    expect(plainLine).toBeDefined();
+    expect(plainLine).not.toContain("scores(");
+    expect(JSON.stringify(appendEntry.mock.calls)).not.toContain("scores");
+    expect(JSON.stringify(appendEntry.mock.calls)).not.toContain(scoredText);
+  });
+
   it("queued settled extraction does zero work once session memory is turned off", async () => {
     const runtime = makeRuntime();
     getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });

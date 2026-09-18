@@ -114,7 +114,7 @@ There is no remaining packaged-acceptance gap; `npm run acceptance:pi` hard-fail
 
 - Unit: configuration, identity, scope, filtering, lifecycle, conflict, budgeting, rendering, i18n.
 - Integration: SQLite migrations/concurrency, provider adapter, pipelines, failure and retry state.
-- Contract: a disposable Hindsight 0.8.3 instance with synthetic owned banks/data and a non-owned sentinel; never the user's existing banks.
+- Contract: a disposable Hindsight `0.8.3` or `0.10.0` instance with synthetic owned banks/data and a non-owned sentinel; never the user's existing banks. For `0.10.0`, acceptance also proves Recall score shape. Live rollback from `0.10.0` to `0.8.3` requires restoring a pre-upgrade database snapshot; switching the image alone is not sufficient.
 - Pi E2E: packaged extension installed into an isolated `PI_CODING_AGENT_DIR`, interactive lifecycle, per-turn system-prompt injection, Session resume, TUI, and no-op non-interactive modes.
 - Platform: full local acceptance on macOS and CI coverage on Linux.
 
@@ -124,7 +124,7 @@ There is no remaining packaged-acceptance gap; `npm run acceptance:pi` hard-fail
 
 1. `PI_MEMORY_HINDSIGHT_LIVE_ACCEPT=1`
 2. `PI_MEMORY_HINDSIGHT_BASE_URL` is explicit loopback `http://` or `https://`
-3. `PI_MEMORY_HINDSIGHT_EXPECTED_API_VERSION=0.8.3`
+3. `PI_MEMORY_HINDSIGHT_EXPECTED_API_VERSION` is exactly `0.8.3` or `0.10.0`
 4. `PI_MEMORY_HINDSIGHT_LIVE_NONCE` is present
 5. `PI_MEMORY_HINDSIGHT_LIVE_BANK_ID` exactly equals the nonce-derived disposable bank ID
 

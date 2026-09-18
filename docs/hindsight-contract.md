@@ -1,17 +1,17 @@
-# Hindsight 0.8.3 Contract Investigation
+# Hindsight Contract Investigation
 
-Status: Phase-0 source/OpenAPI contract established; mutation behavior still requires a disposable-instance contract test during implementation.
+Status: Phase-0 source/OpenAPI contract established against `0.8.3`; dual exact support for `0.8.3` and `0.10.0` is implemented. Mutation behavior still requires a disposable-instance contract test during acceptance.
 
 ## Investigated deployment
 
-- Image: `ghcr.io/vectorize-io/hindsight:latest`
-- API version: `0.8.3`
-- Image source revision: `e1014cc790da502effacdb4bc914f8eea670606e`
-- HTTP API: `http://127.0.0.1:8888`
-- OpenAPI title/version: `Hindsight HTTP API` / `0.8.3`
+- Image: `ghcr.io/vectorize-io/hindsight:latest` (historical Phase-0 investigation) and isolated `ghcr.io/vectorize-io/hindsight:0.10.0`
+- Supported API versions (exact allowlist, no semver range): `0.8.3`, `0.10.0`
+- Historical Phase-0 image source revision: `e1014cc790da502effacdb4bc914f8eea670606e`
+- HTTP API: commonly `http://127.0.0.1:8888`; isolated `0.10.0` acceptance uses a separate loopback port
+- OpenAPI title/version: `Hindsight HTTP API` matching the negotiated exact version
 - Control Plane: port `9999`, explicitly outside product scope.
 - Investigation inputs: `/health`, `/version`, OpenAPI, and a read-only copy of the matching container source.
-- Existing banks were neither listed nor read. No Hindsight data was mutated.
+- Existing banks were neither listed nor read. No Hindsight data was mutated during Phase-0 investigation.
 
 The observed `/version` feature flags are:
 
@@ -22,7 +22,7 @@ The observed `/version` feature flags are:
 - LLM tracing: enabled
 - audit log: disabled
 
-These are deployment observations, not portable assumptions. The adapter must capability-check required behavior.
+These are deployment observations, not portable assumptions. The adapter must capability-check required behavior and accept only the exact tested versions above.
 
 ## Authentication
 
@@ -207,18 +207,22 @@ The adapter must:
 1. normalize and validate the configured URL;
 2. reject URL credentials and non-HTTP(S) schemes;
 3. call `/health` and `/version` with short timeouts;
-4. require compatible major/minor behavior for the tested `0.8.3` baseline;
+4. require an exact tested baseline (`0.8.3` or `0.10.0`); every other version fails closed;
 5. verify bank-config API availability before writes;
 6. establish and read back owned-bank overrides;
 7. never enumerate banks to discover ownership;
 8. redact response bodies in user-facing errors and logs;
-9. bound response sizes and reject malformed JSON.
+9. bound response sizes and reject malformed JSON;
+10. for negotiated `0.10.0`, require a valid Recall `scores` object on every ordinary result (`final` finite, no artificial `0..1` bound; optional component scores may be null); for `0.8.3`, absent scores remain allowed while a present object still validates;
+11. never send an automatic Recall `min_scores` threshold in this phase; score diagnostics are Session-local only and are never persisted.
 
 A capability mismatch disables memory safely and never blocks normal Pi operation.
 
+Live rollback from `0.10.0` to `0.8.3` requires restoring a pre-upgrade database snapshot. Some Alembic migrations between those heads are not data-reversible; switching the container image alone is not a safe rollback.
+
 ## Implementation-time contract tests
 
-Run only against a disposable Hindsight 0.8.3 instance or synthetic owned test bank, never pre-existing user banks:
+Run only against a disposable Hindsight `0.8.3` or `0.10.0` instance or synthetic owned test bank, never pre-existing user banks:
 
 - create/update owned bank idempotently;
 - set/read back chunks, fixed chunk size, and observation overrides;
@@ -227,6 +231,8 @@ Run only against a disposable Hindsight 0.8.3 instance or synthetic owned test b
 - replace same document with new text and prove old text/source is gone;
 - simulate ambiguous response and reconcile by document ID;
 - recall source units and metadata in Chinese and English;
+- for `0.10.0`, prove Recall score shape including `final > 1` when observed;
 - physically delete document and prove all postconditions;
+- verify known-document absence after cleanup;
 - verify non-owned sentinel bank remains unchanged;
 - exercise auth, 4xx/5xx, timeout, cancellation, malformed and oversized responses.

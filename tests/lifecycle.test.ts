@@ -420,6 +420,106 @@ describe("automatic recall lifecycle", () => {
     expect(runtime.adapter.recall).toHaveBeenCalledTimes(4);
   });
 
+  it("carries validated scores into session-local /memory last diagnostics only for injected items", async () => {
+    const runtime = makeRuntime();
+    const profileText = "Prefer concise answers.";
+    const profileHash = sha256(profileText);
+    const profileId = randomUUID();
+    const profileDoc = buildOwnedDocumentId("profile", null, "preference", profileId);
+    const profileCreatedAt = new Date(Date.now() - 60_000).toISOString();
+    const profileUpdatedAt = new Date(Date.now() - 30_000).toISOString();
+    runtime.repos.memories.create({
+      id: profileId,
+      scope: "profile",
+      memoryType: "preference",
+      projectIdentity: null,
+      bankId: runtime.profileBankId,
+      documentId: profileDoc,
+      unitId: "u1",
+      textHash: profileHash,
+      textLength: profileText.length,
+      verificationState: "verified",
+      sourceSessionId: null,
+      sourceRef: null,
+      supersedesMemoryId: null,
+      expiresAt: null,
+      createdAt: profileCreatedAt,
+      updatedAt: profileUpdatedAt,
+      lastVerifiedAt: profileUpdatedAt,
+    });
+    const scores = {
+      final: 1.0986786712451455,
+      reranker: null,
+      semantic: 0.77,
+      keyword: null,
+    };
+    runtime.adapter.recall.mockResolvedValue({
+      ok: true,
+      value: [
+        {
+          id: "1",
+          text: profileText,
+          type: "world",
+          documentId: profileDoc,
+          metadata: {
+            logical_id: profileId,
+            content_hash: profileHash,
+            scope: "profile",
+            memory_type: "preference",
+            verification_state: "verified",
+            created_at: profileCreatedAt,
+            updated_at: profileUpdatedAt,
+            last_verified_at: profileUpdatedAt,
+          },
+          tags: null,
+          context: null,
+          mentionedAt: null,
+          scores,
+        },
+        {
+          id: "dropped",
+          text: "Unreconciled provider noise",
+          type: "world",
+          documentId: "pi-memory-hindsight:memory:00000000000000000000000000000000",
+          metadata: {
+            logical_id: randomUUID(),
+            content_hash: sha256("Unreconciled provider noise"),
+            scope: "profile",
+            memory_type: "preference",
+            verification_state: "verified",
+            created_at: profileCreatedAt,
+            updated_at: profileUpdatedAt,
+            last_verified_at: profileUpdatedAt,
+          },
+          tags: null,
+          context: null,
+          mentionedAt: null,
+          scores: { final: 9.9, reranker: 9.9, semantic: 9.9, keyword: 9.9 },
+        },
+      ],
+    });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false });
+
+    noteOrdinaryInput("session-1");
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "How do I answer?", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+
+    const last = getSessionState("session-1").lastRecall;
+    expect(last?.items).toHaveLength(1);
+    expect(last?.items[0]).toMatchObject({
+      memoryId: profileId,
+      scores,
+    });
+    expect(JSON.stringify(last)).not.toContain("Unreconciled");
+    expect(JSON.stringify(last)).not.toContain("9.9");
+
+    // Diagnostics stay process-local: a different Session does not inherit them.
+    expect(getSessionState("session-other").lastRecall).toBeNull();
+  });
+
   it("isolates per-bank failures and rejects locally tombstoned shared-project memories", async () => {
     const runtime = makeRuntime();
     const projectIdentity = "repo";

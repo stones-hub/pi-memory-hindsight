@@ -16,6 +16,7 @@
 import { createHash } from "node:crypto";
 import type { InputEvent, TurnStartEvent } from "@earendil-works/pi-coding-agent";
 import type { MemoryType, Scope } from "../db/types.js";
+import type { RecallScores } from "../provider/types.js";
 
 export interface LastRecallDiagnostic {
   injectedAt: string;
@@ -27,6 +28,8 @@ export interface LastRecallDiagnostic {
     /** Local logical id when governed locally; null for shared Project-only recalls. */
     memoryId: string | null;
     readOnlyShared: boolean;
+    /** Session-local score diagnostics only; never persisted. */
+    scores: RecallScores | null;
   }[];
 }
 

@@ -70,7 +70,19 @@ describe("live hindsight acceptance gates", () => {
     ).toThrow(/does not match/);
   });
 
-  it("accepts fully gated loopback live config", () => {
+  it("rejects unsupported expected api versions", () => {
+    expect(() =>
+      validateLiveAcceptanceEnv({
+        PI_MEMORY_HINDSIGHT_LIVE_ACCEPT: "1",
+        PI_MEMORY_HINDSIGHT_BASE_URL: "http://127.0.0.1:18888",
+        PI_MEMORY_HINDSIGHT_EXPECTED_API_VERSION: "0.10.1",
+        PI_MEMORY_HINDSIGHT_LIVE_NONCE: "nonce-1234",
+        PI_MEMORY_HINDSIGHT_LIVE_BANK_ID: deriveDisposableLiveBankId("nonce-1234"),
+      }),
+    ).toThrow(/0\.8\.3 or 0\.10\.0/);
+  });
+
+  it("accepts fully gated loopback live config for 0.8.3 and 0.10.0", () => {
     const bankId = deriveDisposableLiveBankId("nonce-1234");
     expect(
       validateLiveAcceptanceEnv({
@@ -83,6 +95,21 @@ describe("live hindsight acceptance gates", () => {
     ).toEqual({
       baseUrl: "http://127.0.0.1:8888",
       bankId,
+      expectedApiVersion: "0.8.3",
+      apiKey: undefined,
+    });
+    expect(
+      validateLiveAcceptanceEnv({
+        PI_MEMORY_HINDSIGHT_LIVE_ACCEPT: "1",
+        PI_MEMORY_HINDSIGHT_BASE_URL: "http://127.0.0.1:18888",
+        PI_MEMORY_HINDSIGHT_EXPECTED_API_VERSION: "0.10.0",
+        PI_MEMORY_HINDSIGHT_LIVE_NONCE: "nonce-1234",
+        PI_MEMORY_HINDSIGHT_LIVE_BANK_ID: bankId,
+      }),
+    ).toEqual({
+      baseUrl: "http://127.0.0.1:18888",
+      bankId,
+      expectedApiVersion: "0.10.0",
       apiKey: undefined,
     });
   });
@@ -98,11 +125,11 @@ describe("live hindsight acceptance runner (mock)", () => {
     }
   });
 
-  function buildEnv(nonce: string, baseUrl: string) {
+  function buildEnv(nonce: string, baseUrl: string, expectedApiVersion: "0.8.3" | "0.10.0" = "0.8.3") {
     return {
       PI_MEMORY_HINDSIGHT_LIVE_ACCEPT: "1",
       PI_MEMORY_HINDSIGHT_BASE_URL: baseUrl,
-      PI_MEMORY_HINDSIGHT_EXPECTED_API_VERSION: "0.8.3",
+      PI_MEMORY_HINDSIGHT_EXPECTED_API_VERSION: expectedApiVersion,
       PI_MEMORY_HINDSIGHT_LIVE_NONCE: nonce,
       PI_MEMORY_HINDSIGHT_LIVE_BANK_ID: deriveDisposableLiveBankId(nonce),
     };
@@ -115,7 +142,10 @@ describe("live hindsight acceptance runner (mock)", () => {
     const evidence = await runLiveHindsightAcceptance(env);
 
     expect(evidence.ok).toBe(true);
+    expect(evidence.expectedApiVersion).toBe("0.8.3");
+    expect(evidence.negotiatedApiVersion).toBe("0.8.3");
     expect(evidence.recallContainedExpectedItem).toBe(true);
+    expect(evidence.recallScoresValidated).toBeNull();
     expect(evidence.bankDeleteAcknowledged).toBe(true);
     expect(evidence.knownDocumentAbsenceProven).toBe(true);
     expect(evidence.bankAbsenceEndpointUnavailable).toBe(true);
@@ -135,6 +165,17 @@ describe("live hindsight acceptance runner (mock)", () => {
     // deleted bank id (mirroring real "no persistent bank" behavior), so the
     // meaningful postcondition is "no documents survived", not "map entry gone".
     expect(server.getBank(bankId)?.documents.size ?? 0).toBe(0);
+  });
+
+  it("proves 0.10.0 score shape on the disposable mock path", async () => {
+    server = await startMockHindsightServer({ apiVersion: "0.10.0" });
+    const env = buildEnv("mock-run-0100", server.baseUrl, "0.10.0");
+    const evidence = await runLiveHindsightAcceptance(env);
+    expect(evidence.ok).toBe(true);
+    expect(evidence.expectedApiVersion).toBe("0.10.0");
+    expect(evidence.negotiatedApiVersion).toBe("0.10.0");
+    expect(evidence.recallScoresValidated).toBe(true);
+    expect(evidence.cleanupOperationallyComplete).toBe(true);
   });
 
   it("throws the primary error alone when only the write path fails", async () => {

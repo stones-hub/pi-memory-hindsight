@@ -41,6 +41,32 @@ describe("i18n", () => {
     expect(t("zh", "nonexistent.key")).toBe("nonexistent.key");
   });
 
+  it("formats optional recall score diagnostics without inventing thresholds", () => {
+    expect(
+      t("en", "memory.last.item", {
+        id: "m1",
+        scope: "profile",
+        type: "preference",
+        text: "Prefer concise answers.",
+        scores: t("en", "memory.last.scores", {
+          final: 1.0986786712451455,
+          reranker: "null",
+          semantic: 0.8,
+          keyword: "null",
+        }),
+      }),
+    ).toContain("scores(final=1.0986786712451455, reranker=null, semantic=0.8, keyword=null)");
+    expect(
+      t("en", "memory.last.item", {
+        id: "m1",
+        scope: "profile",
+        type: "preference",
+        text: "Prefer concise answers.",
+        scores: "",
+      }),
+    ).toBe("- m1 [profile/preference] Prefer concise answers.");
+  });
+
   it("covers every supported /memory command form in grouped bilingual help", () => {
     const requiredForms = [
       "/memory help",

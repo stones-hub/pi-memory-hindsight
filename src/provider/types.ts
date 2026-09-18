@@ -1,11 +1,19 @@
 /**
- * Provider-facing types for the Hindsight 0.8.3 adapter
+ * Provider-facing types for the Hindsight adapter
  * (architecture.md "Bank and identity model", hindsight-contract.md).
  *
  * These types intentionally mirror only the fields the Extension actually
- * uses from the live OpenAPI schemas confirmed against a local Hindsight
- * 0.8.3 instance, not the full API surface.
+ * uses from the live OpenAPI schemas confirmed against the tested Hindsight
+ * baselines (`0.8.3` and `0.10.0`), not the full API surface.
  */
+
+/** Exact API versions the adapter may negotiate. No broad semver range. */
+export const SUPPORTED_API_VERSIONS = ["0.8.3", "0.10.0"] as const;
+export type SupportedApiVersion = (typeof SUPPORTED_API_VERSIONS)[number];
+
+export function isSupportedApiVersion(value: string): value is SupportedApiVersion {
+  return (SUPPORTED_API_VERSIONS as readonly string[]).includes(value);
+}
 
 export type ProviderFailureCategory =
   | "timeout"
@@ -71,6 +79,18 @@ export interface RecallInput {
   maxTokens: number;
 }
 
+/**
+ * Native Recall relevance scores from Hindsight 0.10.0.
+ * `final` is a finite number with no artificial 0..1 bound; optional component
+ * scores may be null. Validated scores are diagnostics only in this phase.
+ */
+export interface RecallScores {
+  final: number;
+  reranker: number | null;
+  semantic: number | null;
+  keyword: number | null;
+}
+
 export interface RecallResultItem {
   id: string;
   text: string;
@@ -80,6 +100,8 @@ export interface RecallResultItem {
   tags: string[] | null;
   context: string | null;
   mentionedAt: string | null;
+  /** Present after validation when the provider returned scores; otherwise null. */
+  scores?: RecallScores | null;
 }
 
 export interface ReflectInput {

@@ -1,15 +1,16 @@
 /**
- * Governed Hindsight 0.8.3 adapter (hindsight-contract.md, architecture.md
+ * Governed Hindsight adapter (hindsight-contract.md, architecture.md
  * "Bank and identity model").
  *
  * This is the only module allowed to talk to Hindsight. It enforces:
- * - compatibility/capability checks before any write;
+ * - exact dual-version compatibility (`0.8.3` | `0.10.0`) before provider use;
  * - fail-closed owned-bank configuration (create, override, verify readback);
  * - the one-memory-per-document representation with mandatory post-write
  *   verification (retain does not return unit IDs);
  * - document-delete as the sole physical-forget path, with postcondition
  *   verification;
- * - source-types-only, expansion-disabled recall with a bounded budget;
+ * - source-types-only, expansion-disabled recall with a bounded budget and
+ *   version-aware Recall score validation;
  * - manual-only reflect.
  *
  * It never lists banks and never manages configuration on a bank other than
@@ -27,6 +28,7 @@ import {
   validateRetainMetadata,
 } from "./validation.js";
 import {
+  isSupportedApiVersion,
   OWNED_BANK_CONFIG_OVERRIDES,
   type CompatibilityCheck,
   type DeleteDocumentOutput,
@@ -35,8 +37,10 @@ import {
   type ReflectOutput,
   type RecallInput,
   type RecallResultItem,
+  type RecallScores,
   type RetainOneMemoryInput,
   type RetainOneMemoryOutput,
+  type SupportedApiVersion,
 } from "./types.js";
 
 export interface HindsightAdapterOptions {
@@ -52,7 +56,7 @@ export interface HindsightAdapterOptions {
   reflectTimeoutMs?: number;
 }
 
-const SUPPORTED_API_VERSION = "0.8.3";
+const SUPPORTED_BASELINES_LABEL = "0.8.3|0.10.0";
 const MAX_RECALL_RESULTS = 50;
 const MAX_TEXT_LENGTH = 4_000;
 const MAX_METADATA_ENTRIES = 32;
@@ -168,12 +172,85 @@ function validateOptionalString(value: unknown, maxLength: number): string | nul
   return value;
 }
 
+/**
+ * Bounds and redacts an untrusted `/version` api_version for failure reasons.
+ * Short printable identifiers are kept; control characters, non-ASCII, and
+ * overlong strings become a fixed redaction token so reasons stay bounded.
+ */
+export function redactApiVersionForReason(value: string): string {
+  if (/^[0-9A-Za-z._-]{1,32}$/.test(value)) return value;
+  return "<redacted>";
+}
+
+function isFiniteNumberOrNull(value: unknown): value is number | null {
+  if (value === null) return true;
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/**
+ * Validates a native Recall score object. `final` must be a finite number with
+ * no artificial 0..1 bound; optional component scores must each be a finite
+ * number or null. Unknown extra fields are ignored.
+ */
+export function validateRecallScores(raw: unknown): { ok: true; value: RecallScores } | { ok: false; reason: string } {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { ok: false, reason: "recall scores were malformed" };
+  }
+  const scores = raw as Record<string, unknown>;
+  if (typeof scores.final !== "number" || !Number.isFinite(scores.final)) {
+    return { ok: false, reason: "recall scores.final was missing or not a finite number" };
+  }
+  if (!("reranker" in scores) || !isFiniteNumberOrNull(scores.reranker)) {
+    return { ok: false, reason: "recall scores.reranker was malformed" };
+  }
+  if (!("semantic" in scores) || !isFiniteNumberOrNull(scores.semantic)) {
+    return { ok: false, reason: "recall scores.semantic was malformed" };
+  }
+  if (!("keyword" in scores) || !isFiniteNumberOrNull(scores.keyword)) {
+    return { ok: false, reason: "recall scores.keyword was malformed" };
+  }
+  return {
+    ok: true,
+    value: {
+      final: scores.final,
+      reranker: scores.reranker,
+      semantic: scores.semantic,
+      keyword: scores.keyword,
+    },
+  };
+}
+
+function parseRecallItemScores(
+  raw: unknown,
+  scoresRequired: boolean,
+): { ok: true; value: RecallScores | null } | { ok: false; reason: string } {
+  if (raw === null || raw === undefined) {
+    if (scoresRequired) {
+      return { ok: false, reason: "recall failed: scores were required but absent" };
+    }
+    return { ok: true, value: null };
+  }
+  const validated = validateRecallScores(raw);
+  if (!validated.ok) {
+    return { ok: false, reason: `recall failed: ${validated.reason}` };
+  }
+  return { ok: true, value: validated.value };
+}
+
 export class HindsightAdapter {
   private readonly client: HindsightClient;
   /** Effective per-request HTTP timeout after ceiling clamp (≤ PROVIDER_HTTP_TIMEOUT_MS). */
   readonly httpTimeoutMs: number;
   /** Effective Reflect-only timeout after ceiling clamp (≤ REFLECT_HTTP_TIMEOUT_MS). */
   readonly reflectTimeoutMs: number;
+  /**
+   * Exact API version accepted by the latest successful `checkCompatibility`
+   * on this instance. Cleared only when a compatibility check completes with
+   * failure — never cleared at method entry, so concurrent Recall can still
+   * use the previously negotiated contract while a recheck is in flight.
+   * Never shared across adapter instances.
+   */
+  private negotiatedApiVersion: SupportedApiVersion | null = null;
 
   constructor(options: HindsightAdapterOptions) {
     const http = new HttpClient({
@@ -186,41 +263,54 @@ export class HindsightAdapter {
     this.client = new HindsightClient(http);
   }
 
+  /** Instance-local negotiated version, or null before a successful check. */
+  getNegotiatedApiVersion(): SupportedApiVersion | null {
+    return this.negotiatedApiVersion;
+  }
+
   /**
-   * Verifies the deployment is reachable and speaks a compatible API/feature
-   * set. Callers must disable memory (fail closed) on any `ok: false`.
+   * Verifies the deployment is reachable and speaks an exact tested API
+   * baseline. Callers must disable memory (fail closed) on any `ok: false`.
+   * Capability state is published atomically: the last successful version is
+   * preserved while a recheck is in flight, updated only on success, and
+   * cleared when a check completes with failure.
    */
   async checkCompatibility(signal?: AbortSignal): Promise<ProviderResult<CompatibilityCheck>> {
+    const failAndClear = <T>(result: ProviderResult<T>): ProviderResult<T> => {
+      this.negotiatedApiVersion = null;
+      return result;
+    };
     const health = await this.client.health(signal);
     if (!health.ok) {
-      return failLike(health, `hindsight health check failed: ${health.reason}`);
+      return failAndClear(failLike(health, `hindsight health check failed: ${health.reason}`));
     }
     if (typeof health.value.status !== "string" || health.value.status !== "healthy") {
-      return { ok: false, reason: "hindsight reported unhealthy status", category: "validation" };
+      return failAndClear({ ok: false, reason: "hindsight reported unhealthy status", category: "validation" });
     }
     const version = await this.client.version(signal);
     if (!version.ok) {
-      return failLike(version, `hindsight version check failed: ${version.reason}`);
+      return failAndClear(failLike(version, `hindsight version check failed: ${version.reason}`));
     }
     const apiVersion = version.value.api_version;
     if (typeof apiVersion !== "string" || typeof version.value.features !== "object" || version.value.features === null) {
-      return { ok: false, reason: "hindsight version response was malformed", category: "validation" };
+      return failAndClear({ ok: false, reason: "hindsight version response was malformed", category: "validation" });
     }
-    if (apiVersion !== SUPPORTED_API_VERSION) {
-      return {
+    if (!isSupportedApiVersion(apiVersion)) {
+      return failAndClear({
         ok: false,
-        reason: `hindsight api_version ${apiVersion} is not compatible with supported baseline ${SUPPORTED_API_VERSION}`,
+        reason: `hindsight api_version ${redactApiVersionForReason(apiVersion)} is not compatible with supported baselines ${SUPPORTED_BASELINES_LABEL}`,
         category: "validation",
-      };
+      });
     }
     const bankConfigApiEnabled = version.value.features.bank_config_api === true;
     if (!bankConfigApiEnabled) {
-      return {
+      return failAndClear({
         ok: false,
         reason: "hindsight deployment does not expose the bank configuration API",
         category: "validation",
-      };
+      });
     }
+    this.negotiatedApiVersion = apiVersion;
     return {
       ok: true,
       value: { healthy: true, apiVersion, bankConfigApiEnabled },
@@ -737,10 +827,22 @@ export class HindsightAdapter {
 
   /**
    * Recalls only source fact types with all optional expansions disabled and
-   * a bounded provider budget. Extension-side scope/lifecycle/sensitivity/
-   * conflict/count/token filtering happens in the recall pipeline, not here.
+   * a bounded provider budget. Requires a prior successful `checkCompatibility`
+   * on this instance. Automatic Recall never sends `min_scores`. Score presence
+   * is required for negotiated `0.10.0` and optional for `0.8.3`; a present
+   * object always validates strictly. Extension-side scope/lifecycle/
+   * sensitivity/conflict/count/token filtering happens in the recall pipeline.
    */
   async recall(input: RecallInput, signal?: AbortSignal): Promise<ProviderResult<RecallResultItem[]>> {
+    const negotiated = this.negotiatedApiVersion;
+    if (negotiated === null) {
+      return {
+        ok: false,
+        reason: "recall rejected: hindsight compatibility has not been negotiated",
+        category: "validation",
+      };
+    }
+    const scoresRequired = negotiated === "0.10.0";
     const bankIdCheck = validateBankId(input.bankId);
     if (!bankIdCheck.ok) {
       return { ok: false, reason: bankIdCheck.reason ?? "invalid bank id", category: "validation" };
@@ -800,6 +902,10 @@ export class HindsightAdapter {
       if (type !== null && type !== "world" && type !== "experience") {
         return { ok: false, reason: "recall failed: response item type was unsupported", category: "validation" };
       }
+      const scoresParsed = parseRecallItemScores(r.scores, scoresRequired);
+      if (!scoresParsed.ok) {
+        return { ok: false, reason: scoresParsed.reason, category: "validation" };
+      }
       items.push({
         id,
         text,
@@ -809,6 +915,7 @@ export class HindsightAdapter {
         tags,
         context,
         mentionedAt,
+        scores: scoresParsed.value,
       });
     }
     return { ok: true, value: items };

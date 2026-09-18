@@ -1,9 +1,10 @@
 /**
- * Typed bindings for the exact Hindsight 0.8.3 HTTP endpoints the Extension
- * uses, confirmed against a local instance's `/openapi.json` and live
- * request/response round trips (hindsight-contract.md). This module speaks
- * the wire format (snake_case) verbatim; `hindsight-adapter.ts` translates to
- * and from the Extension's domain types and applies governance policy.
+ * Typed bindings for the Hindsight HTTP endpoints the Extension uses,
+ * confirmed against the tested baselines (`0.8.3` and `0.10.0`) via
+ * `/openapi.json` and live request/response round trips
+ * (hindsight-contract.md). This module speaks the wire format (snake_case)
+ * verbatim; `hindsight-adapter.ts` translates to and from the Extension's
+ * domain types and applies governance policy.
  */
 
 import type { HttpClient } from "./http-client.js";
@@ -49,6 +50,8 @@ export interface ListMemoryUnitWire {
   id: string;
   text: string;
   type?: string | null;
+  /** Present on some 0.10.0 list payloads; governance does not depend on it. */
+  fact_type?: string | null;
   document_id?: string | null;
   metadata?: Record<string, string> | null;
   tags?: string[] | null;
@@ -71,7 +74,7 @@ export interface DeleteDocumentResponseWire {
   memory_units_deleted: number;
 }
 
-/** Narrow wire shape for GET /documents/{document_id} on Hindsight 0.8.3. */
+/** Narrow wire shape for GET /documents/{document_id} on tested Hindsight baselines. */
 export interface DocumentGetResponseWire {
   id: string;
   bank_id: string;
@@ -87,6 +90,21 @@ export interface DocumentGetResponseWire {
   observation_scopes?: Record<string, unknown>;
 }
 
+/** Optional score-threshold request fields; automatic Recall never sends these. */
+export interface RecallMinScoresWire {
+  final?: number;
+  reranker?: number;
+  semantic?: number;
+  keyword?: number;
+}
+
+export interface RecallScoresWire {
+  final: number;
+  reranker: number | null;
+  semantic: number | null;
+  keyword: number | null;
+}
+
 export interface RecallRequestWire {
   query: string;
   types?: string[];
@@ -97,6 +115,8 @@ export interface RecallRequestWire {
     chunks?: null;
     source_facts?: null;
   };
+  /** Typed for completeness; automatic Recall omits this field entirely. */
+  min_scores?: RecallMinScoresWire;
 }
 
 export interface RecallResultWire {
@@ -108,6 +128,7 @@ export interface RecallResultWire {
   tags?: string[] | null;
   context?: string | null;
   mentioned_at?: string | null;
+  scores?: RecallScoresWire | null;
 }
 
 export interface RecallResponseWire {

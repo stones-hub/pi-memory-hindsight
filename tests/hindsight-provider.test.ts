@@ -2,7 +2,7 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { profileBankId } from "../src/identity/bank-id.js";
-import { HindsightAdapter } from "../src/provider/hindsight-adapter.js";
+import { HindsightAdapter, validateRecallScores, redactApiVersionForReason } from "../src/provider/hindsight-adapter.js";
 import { HttpClient, REFLECT_HTTP_TIMEOUT_MS, clampReflectHttpTimeoutMs } from "../src/provider/http-client.js";
 import { OWNED_BANK_CONFIG_OVERRIDES } from "../src/provider/types.js";
 import { buildOwnedDocumentId } from "../src/provider/validation.js";
@@ -337,32 +337,199 @@ describe("HttpClient", () => {
   });
 });
 
-describe("HindsightAdapter", () => {
-  it("checks exact health/version compatibility and rejects malformed capability responses", async () => {
-    const server = await startMockServer();
-    server.setRoute("GET", "/health", (_req, res) => json(res, 200, { status: "healthy", database: "ok" }));
-    server.setRoute("GET", "/version", (_req, res) =>
-      json(res, 200, { api_version: "0.8.3", features: { bank_config_api: true } }),
-    );
-    const adapter = new HindsightAdapter({ baseUrl: server.baseUrl });
-    await expect(adapter.checkCompatibility()).resolves.toEqual({
+describe("validateRecallScores", () => {
+  it("accepts final above 1 and nullable optional fields, and rejects non-finite values", () => {
+    expect(
+      validateRecallScores({
+        final: 1.0986786712451455,
+        reranker: null,
+        semantic: 0.5,
+        keyword: null,
+        extra_ignored: true,
+      }),
+    ).toEqual({
       ok: true,
-      value: { healthy: true, apiVersion: "0.8.3", bankConfigApiEnabled: true },
+      value: {
+        final: 1.0986786712451455,
+        reranker: null,
+        semantic: 0.5,
+        keyword: null,
+      },
     });
+    expect(validateRecallScores({ final: Number.NaN, reranker: null, semantic: null, keyword: null }).ok).toBe(false);
+    expect(
+      validateRecallScores({ final: Number.POSITIVE_INFINITY, reranker: null, semantic: null, keyword: null }).ok,
+    ).toBe(false);
+    expect(validateRecallScores({ final: 1, reranker: Number.NaN, semantic: null, keyword: null }).ok).toBe(false);
+  });
+});
+
+describe("redactApiVersionForReason", () => {
+  it("keeps short printable identifiers and redacts long or control-bearing strings", () => {
+    expect(redactApiVersionForReason("0.8.0")).toBe("0.8.0");
+    expect(redactApiVersionForReason("0.10.1")).toBe("0.10.1");
+    const long = `0.9.${"x".repeat(200)}`;
+    expect(redactApiVersionForReason(long)).toBe("<redacted>");
+    expect(redactApiVersionForReason(long).length).toBeLessThan(32);
+    expect(redactApiVersionForReason("0.9.0\nsecret")).toBe("<redacted>");
+    expect(redactApiVersionForReason("0.9.0\u0000evil")).toBe("<redacted>");
+    expect(redactApiVersionForReason("版本-奇怪")).toBe("<redacted>");
+  });
+});
+
+function installCompatibleVersion(
+  server: MockServer,
+  apiVersion: "0.8.3" | "0.10.0" = "0.8.3",
+): void {
+  server.setRoute("GET", "/health", (_req, res) => json(res, 200, { status: "healthy", database: "ok" }));
+  server.setRoute("GET", "/version", (_req, res) =>
+    json(res, 200, { api_version: apiVersion, features: { bank_config_api: true } }),
+  );
+}
+
+async function negotiateAdapter(
+  server: MockServer,
+  apiVersion: "0.8.3" | "0.10.0" = "0.8.3",
+): Promise<HindsightAdapter> {
+  installCompatibleVersion(server, apiVersion);
+  const adapter = new HindsightAdapter({ baseUrl: server.baseUrl });
+  const compat = await adapter.checkCompatibility();
+  expect(compat).toEqual({
+    ok: true,
+    value: { healthy: true, apiVersion, bankConfigApiEnabled: true },
+  });
+  expect(adapter.getNegotiatedApiVersion()).toBe(apiVersion);
+  return adapter;
+}
+
+describe("HindsightAdapter", () => {
+  it("accepts exact 0.8.3 and 0.10.0, rejects nearby/unknown versions, and keeps negotiation instance-local", async () => {
+    const server083 = await startMockServer();
+    const adapter083 = await negotiateAdapter(server083, "0.8.3");
+    expect(adapter083.getNegotiatedApiVersion()).toBe("0.8.3");
+
+    const server010 = await startMockServer();
+    const adapter010 = await negotiateAdapter(server010, "0.10.0");
+    expect(adapter010.getNegotiatedApiVersion()).toBe("0.10.0");
+    // Negotiation must not leak across adapter instances.
+    expect(adapter083.getNegotiatedApiVersion()).toBe("0.8.3");
 
     const server2 = await startMockServer();
     server2.setRoute("GET", "/health", (_req, res) => json(res, 200, { status: "healthy", database: "ok" }));
     server2.setRoute("GET", "/version", (_req, res) => json(res, 200, { api_version: 83, features: null }));
-    const bad = await new HindsightAdapter({ baseUrl: server2.baseUrl }).checkCompatibility();
+    const badAdapter = new HindsightAdapter({ baseUrl: server2.baseUrl });
+    const bad = await badAdapter.checkCompatibility();
     expect(bad).toMatchObject({ ok: false, category: "validation" });
+    expect(badAdapter.getNegotiatedApiVersion()).toBeNull();
 
-    const server3 = await startMockServer();
-    server3.setRoute("GET", "/health", (_req, res) => json(res, 200, { status: "healthy", database: "ok" }));
-    server3.setRoute("GET", "/version", (_req, res) =>
-      json(res, 200, { api_version: "0.8.0", features: { bank_config_api: true } }),
+    for (const apiVersion of ["0.8.0", "0.9.0", "0.10.1", "1.0.0", "0.10"] as const) {
+      const nearby = await startMockServer();
+      nearby.setRoute("GET", "/health", (_req, res) => json(res, 200, { status: "healthy", database: "ok" }));
+      nearby.setRoute("GET", "/version", (_req, res) =>
+        json(res, 200, { api_version: apiVersion, features: { bank_config_api: true } }),
+      );
+      const rejected = await new HindsightAdapter({ baseUrl: nearby.baseUrl }).checkCompatibility();
+      expect(rejected).toMatchObject({ ok: false, category: "validation" });
+      expect(String((rejected as { reason: string }).reason)).toMatch(/not compatible with supported baselines/);
+      expect(String((rejected as { reason: string }).reason)).toContain(apiVersion);
+    }
+
+    const longVersion = `evil-${"A".repeat(500)}\u0007`;
+    const longServer = await startMockServer();
+    longServer.setRoute("GET", "/health", (_req, res) => json(res, 200, { status: "healthy", database: "ok" }));
+    longServer.setRoute("GET", "/version", (_req, res) =>
+      json(res, 200, { api_version: longVersion, features: { bank_config_api: true } }),
     );
-    const exact = await new HindsightAdapter({ baseUrl: server3.baseUrl }).checkCompatibility();
-    expect(exact).toMatchObject({ ok: false, category: "validation" });
+    const longRejected = await new HindsightAdapter({ baseUrl: longServer.baseUrl }).checkCompatibility();
+    expect(longRejected).toMatchObject({ ok: false, category: "validation" });
+    const longReason = String((longRejected as { reason: string }).reason);
+    expect(longReason).toContain("<redacted>");
+    expect(longReason).not.toContain("AAAA");
+    expect(longReason).not.toContain("\u0007");
+    expect(longReason.length).toBeLessThan(200);
+  });
+
+  it("clears negotiation on a later failed compatibility check", async () => {
+    const server = await startMockServer();
+    const adapter = await negotiateAdapter(server, "0.8.3");
+    server.setRoute("GET", "/version", (_req, res) =>
+      json(res, 200, { api_version: "9.9.9", features: { bank_config_api: true } }),
+    );
+    const failed = await adapter.checkCompatibility();
+    expect(failed).toMatchObject({ ok: false, category: "validation" });
+    expect(adapter.getNegotiatedApiVersion()).toBeNull();
+  });
+
+  it("preserves negotiated contract for Recall while a recheck is in flight, then clears if that recheck fails", async () => {
+    const encodedBank = encodeURIComponent(VALID_BANK_ID);
+    const server = await startMockServer();
+    const adapter = await negotiateAdapter(server, "0.8.3");
+
+    server.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res, bodyText) => {
+      expect(JSON.parse(bodyText)).not.toHaveProperty("min_scores");
+      json(res, 200, {
+        results: [{ id: "r1", text: "ok", type: "world", document_id: "doc-1" }],
+      });
+    });
+
+    let releaseVersion: (() => void) | undefined;
+    const versionGate = new Promise<void>((resolve) => {
+      releaseVersion = resolve;
+    });
+    let versionEntered = false;
+    server.setRoute("GET", "/health", (_req, res) => json(res, 200, { status: "healthy", database: "ok" }));
+    server.setRoute("GET", "/version", async (_req, res) => {
+      versionEntered = true;
+      await versionGate;
+      json(res, 200, { api_version: "9.9.9", features: { bank_config_api: true } });
+    });
+
+    const recheck = adapter.checkCompatibility();
+    // Wait until the recheck has entered the version await without clearing negotiation.
+    for (let i = 0; i < 50 && !versionEntered; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(versionEntered).toBe(true);
+    expect(adapter.getNegotiatedApiVersion()).toBe("0.8.3");
+
+    const recalledWhilePending = await adapter.recall({
+      bankId: VALID_BANK_ID,
+      query: "q",
+      budget: "low",
+      maxTokens: 100,
+    });
+    expect(recalledWhilePending).toMatchObject({
+      ok: true,
+      value: [{ id: "r1", scores: null }],
+    });
+    expect(adapter.getNegotiatedApiVersion()).toBe("0.8.3");
+
+    releaseVersion!();
+    const failed = await recheck;
+    expect(failed).toMatchObject({ ok: false, category: "validation" });
+    expect(adapter.getNegotiatedApiVersion()).toBeNull();
+
+    const afterFailure = await adapter.recall({
+      bankId: VALID_BANK_ID,
+      query: "q",
+      budget: "low",
+      maxTokens: 100,
+    });
+    expect(afterFailure).toMatchObject({
+      ok: false,
+      category: "validation",
+      reason: "recall rejected: hindsight compatibility has not been negotiated",
+    });
+
+    // Cold adapters still fail closed before any negotiation.
+    const cold = new HindsightAdapter({ baseUrl: server.baseUrl });
+    await expect(
+      cold.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 }),
+    ).resolves.toMatchObject({
+      ok: false,
+      category: "validation",
+      reason: "recall rejected: hindsight compatibility has not been negotiated",
+    });
   });
 
   it("creates the owned bank, patches exact overrides, and verifies readback from both config and overrides", async () => {
@@ -831,17 +998,20 @@ describe("HindsightAdapter", () => {
     });
   });
 
-  it("recalls only source types, disables expansions, validates inputs, and rejects unsupported observation items", async () => {
+  it("recalls only source types, disables expansions, omits min_scores, validates inputs, and rejects unsupported observation items", async () => {
     const server = await startMockServer();
     const encodedBank = encodeURIComponent(VALID_BANK_ID);
+    const adapter = await negotiateAdapter(server, "0.8.3");
     server.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res, bodyText) => {
-      expect(JSON.parse(bodyText)).toEqual({
+      const body = JSON.parse(bodyText) as Record<string, unknown>;
+      expect(body).toEqual({
         query: "how to build",
         types: ["world", "experience"],
         budget: "mid",
         max_tokens: 1200,
         include: { entities: null, chunks: null, source_facts: null },
       });
+      expect(body).not.toHaveProperty("min_scores");
       json(res, 200, {
         results: [
           {
@@ -857,7 +1027,6 @@ describe("HindsightAdapter", () => {
         ],
       });
     });
-    const adapter = new HindsightAdapter({ baseUrl: server.baseUrl });
     const recalled = await adapter.recall({ bankId: VALID_BANK_ID, query: "  how to build  ", budget: "mid", maxTokens: 1200 });
     expect(recalled).toEqual({
       ok: true,
@@ -871,15 +1040,17 @@ describe("HindsightAdapter", () => {
           tags: ["pi-memory"],
           context: "cli",
           mentionedAt: "2026-01-01T00:00:00.000Z",
+          scores: null,
         },
       ],
     });
 
     const server2 = await startMockServer();
+    const adapter2 = await negotiateAdapter(server2, "0.8.3");
     server2.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res) => {
       json(res, 200, { results: [{ id: "x", text: "ok", type: "observation" }] });
     });
-    const malformed = await new HindsightAdapter({ baseUrl: server2.baseUrl }).recall({
+    const malformed = await adapter2.recall({
       bankId: VALID_BANK_ID,
       query: "q",
       budget: "low",
@@ -892,6 +1063,142 @@ describe("HindsightAdapter", () => {
 
     const tokenRejected = await adapter.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 0 });
     expect(tokenRejected).toMatchObject({ ok: false, category: "validation" });
+  });
+
+  it("fail-closes Recall before negotiation and applies version-aware score validation", async () => {
+    const encodedBank = encodeURIComponent(VALID_BANK_ID);
+    const unnegotiated = await startMockServer();
+    const cold = new HindsightAdapter({ baseUrl: unnegotiated.baseUrl });
+    const before = await cold.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 });
+    expect(before).toMatchObject({
+      ok: false,
+      category: "validation",
+      reason: "recall rejected: hindsight compatibility has not been negotiated",
+    });
+    expect(unnegotiated.requests).toHaveLength(0);
+
+    const validScores = {
+      final: 1.0986786712451455,
+      reranker: null,
+      semantic: 0.8,
+      keyword: null,
+    };
+
+    const server083 = await startMockServer();
+    const adapter083 = await negotiateAdapter(server083, "0.8.3");
+    server083.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res) => {
+      json(res, 200, {
+        results: [{ id: "a", text: "ok", type: "world", document_id: "doc-a", scores: validScores }],
+      });
+    });
+    await expect(
+      adapter083.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: [{ id: "a", scores: validScores }],
+    });
+
+    const absent083 = await startMockServer();
+    const adapterAbsent = await negotiateAdapter(absent083, "0.8.3");
+    absent083.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res) => {
+      json(res, 200, { results: [{ id: "b", text: "ok", type: "world", document_id: "doc-b" }] });
+    });
+    await expect(
+      adapterAbsent.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 }),
+    ).resolves.toMatchObject({ ok: true, value: [{ id: "b", scores: null }] });
+
+    const server010 = await startMockServer();
+    const adapter010 = await negotiateAdapter(server010, "0.10.0");
+    server010.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res, bodyText) => {
+      expect(JSON.parse(bodyText)).not.toHaveProperty("min_scores");
+      json(res, 200, {
+        results: [{ id: "c", text: "ok", type: "world", document_id: "doc-c", scores: validScores }],
+      });
+    });
+    await expect(
+      adapter010.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 }),
+    ).resolves.toMatchObject({ ok: true, value: [{ id: "c", scores: validScores }] });
+
+    const missing010 = await startMockServer();
+    const adapterMissing = await negotiateAdapter(missing010, "0.10.0");
+    missing010.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res) => {
+      json(res, 200, { results: [{ id: "d", text: "ok", type: "world", document_id: "doc-d" }] });
+    });
+    await expect(
+      adapterMissing.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 }),
+    ).resolves.toMatchObject({ ok: false, category: "validation", reason: /scores were required but absent/ });
+
+    const malformedCases: unknown[] = [
+      { final: "1.0", reranker: null, semantic: null, keyword: null },
+      { final: [1], reranker: null, semantic: null, keyword: null },
+      { final: { v: 1 }, reranker: null, semantic: null, keyword: null },
+      { reranker: null, semantic: null, keyword: null },
+      { final: 1.1, reranker: "x", semantic: null, keyword: null },
+      { final: 1.1, reranker: null, semantic: {}, keyword: null },
+      { final: 1.1, reranker: null, semantic: null, keyword: "0.1" },
+      null,
+      "scores",
+      [validScores],
+    ];
+    for (const scores of malformedCases) {
+      const badServer = await startMockServer();
+      const badAdapter = await negotiateAdapter(badServer, "0.10.0");
+      badServer.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res) => {
+        json(res, 200, {
+          results: [{ id: "e", text: "ok", type: "world", document_id: "doc-e", scores }],
+        });
+      });
+      const rejected = await badAdapter.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 });
+      expect(rejected).toMatchObject({ ok: false, category: "validation" });
+    }
+
+    // JSON cannot encode NaN/Infinity; prove the validator rejects them directly, and
+    // that JSON-nullified final (the wire-equivalent of those literals) also fails closed.
+    const nullFinal = await startMockServer();
+    const nullFinalAdapter = await negotiateAdapter(nullFinal, "0.10.0");
+    nullFinal.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res) => {
+      json(res, 200, {
+        results: [
+          {
+            id: "nan",
+            text: "ok",
+            type: "world",
+            document_id: "doc-nan",
+            scores: { final: Number.NaN, reranker: null, semantic: null, keyword: null },
+          },
+        ],
+      });
+    });
+    await expect(
+      nullFinalAdapter.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 }),
+    ).resolves.toMatchObject({ ok: false, category: "validation" });
+
+    // One malformed item rejects the complete response even when siblings are valid.
+    const partial = await startMockServer();
+    const partialAdapter = await negotiateAdapter(partial, "0.10.0");
+    partial.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res) => {
+      json(res, 200, {
+        results: [
+          { id: "ok", text: "ok", type: "world", document_id: "doc-ok", scores: validScores },
+          { id: "bad", text: "bad", type: "world", document_id: "doc-bad", scores: { final: "nope", reranker: null, semantic: null, keyword: null } },
+        ],
+      });
+    });
+    await expect(
+      partialAdapter.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 }),
+    ).resolves.toMatchObject({ ok: false, category: "validation" });
+
+    // Present-but-malformed scores also fail closed on 0.8.3.
+    const presentBad083 = await startMockServer();
+    const presentBadAdapter = await negotiateAdapter(presentBad083, "0.8.3");
+    presentBad083.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res) => {
+      json(res, 200, {
+        results: [{ id: "f", text: "ok", type: "world", document_id: "doc-f", scores: { final: "x", reranker: null, semantic: null, keyword: null } }],
+      });
+    });
+    await expect(
+      presentBadAdapter.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 }),
+    ).resolves.toMatchObject({ ok: false, category: "validation" });
   });
 
   it("uses reflect only through the dedicated endpoint and validates the response and input bounds", async () => {
@@ -937,6 +1244,8 @@ describe("HindsightAdapter", () => {
     // The ordinary ceiling (10ms) is far shorter than the 40ms server delay,
     // so recall must time out while reflect (200ms budget) succeeds.
     const adapter = new HindsightAdapter({ baseUrl: server.baseUrl, timeoutMs: 10, reflectTimeoutMs: 200 });
+    installCompatibleVersion(server, "0.8.3");
+    await expect(adapter.checkCompatibility()).resolves.toMatchObject({ ok: true });
     expect(adapter.httpTimeoutMs).toBe(10);
     expect(adapter.reflectTimeoutMs).toBe(200);
 

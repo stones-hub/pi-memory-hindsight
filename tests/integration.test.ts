@@ -53,13 +53,21 @@ async function makeRuntime(apiKey?: string) {
   const profile = profiles.getOrCreate();
   const server = await startMockHindsightServer();
   servers.push(server);
+  const adapter = new (await import("../src/provider/hindsight-adapter.js")).HindsightAdapter({
+    baseUrl: server.baseUrl,
+    apiKey,
+  });
+  const compat = await adapter.checkCompatibility();
+  if (!compat.ok) {
+    throw new Error(`integration makeRuntime compatibility failed: ${compat.reason}`);
+  }
   return {
     server,
     runtime: {
       agentDir: "/tmp/pi-agent",
       db,
       hindsightUrl: server.baseUrl,
-      adapter: new (await import("../src/provider/hindsight-adapter.js")).HindsightAdapter({ baseUrl: server.baseUrl, apiKey }),
+      adapter,
       profile,
       profileBankId: profileBankId(profile.anonymous_profile_id),
       repos: {

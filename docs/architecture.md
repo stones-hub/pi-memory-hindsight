@@ -16,7 +16,7 @@ Pi interactive session
        ├─ security filters
        ├─ bilingual commands and TUI
        ├─ MemoryProvider interface
-       │    └─ Hindsight 0.8.3 adapter (HTTP :8888)
+       │    └─ Hindsight adapter (exact `0.8.3` | `0.10.0`, HTTP)
        └─ local SQLite governance store (node:sqlite)
 ```
 
@@ -99,10 +99,12 @@ before_agent_start for that prompt
   → rank verified, current, specific items first
   → cap at 10 items / ~1,500 tokens
   → append a clearly delimited untrusted memory block to this turn's system prompt
-  → record redacted diagnostics for /memory last
+  → record redacted diagnostics for /memory last (including validated native scores when present; never persisted)
 ```
 
 Pi 0.85.1 allows `before_agent_start` to return a turn-specific `systemPrompt`. When omitted on the next turn Pi resets to the base prompt, so this avoids persisting recall as a Session message. The handler starts from `event.systemPrompt` (which includes earlier extension changes) and appends its block, preserving extension composition order. Returning `message`, or calling `sendMessage`, would persist memory content and is not used for recall injection.
+
+Automatic Recall does not send a `min_scores` threshold in this phase. Validated native scores from Hindsight `0.10.0` (and optional present scores on `0.8.3`) are Session-local diagnostics only; they do not change injection filtering, count/token budgets, scope precedence, or safety gates. A separate calibration decision is required before any relevance threshold is enabled.
 
 Recall must be guarded by a logical ordinary-user-input key, not `turn_start.turnIndex` or tool-loop count. Pi 0.85.1 emits `before_agent_start` before `turn_start`, so model-turn state cannot gate first-prompt Recall. The public `input` event supplies ordinary-input identity; `before_agent_start` atomically claims it before asynchronous work. A bounded Session-leaf-plus-prompt-hash fallback covers supported paths that reach `before_agent_start` without `input`, without retaining prompt bodies. Later separately submitted ordinary inputs are new identities even when their text is identical. Failures are swallowed after a short redacted warning and are not retried for the same identity.
 

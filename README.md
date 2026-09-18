@@ -14,7 +14,7 @@
 2. 用 `/memory candidates` 审阅、批准或拒绝 Candidate；批准后才会写入 Hindsight 正式记忆。
 3. 若你明确想记住某条内容，用 `/memory remember ...` 或自然语言让 Pi 调用 `memory_remember`，这是直接写入正式记忆的路径。
 
-> 当前版本适配 Pi `0.85.1`、Hindsight API `0.8.3`，需要 Node.js `>=22.19.0`。当前实现已通过 353 项自动化测试、打包后的隔离 Pi 验收、一次性 Bank 的真实 Hindsight 0.8.3 验收，以及真实 Pi 中临时 Memory 的创建、查看、同 ID 更新和精确删除测试。
+> 当前版本适配 Pi `0.85.1`、Hindsight API `0.8.3` 与 `0.10.0`（精确双版本，非 semver 范围），需要 Node.js `>=22.19.0`。当前实现已通过自动化测试、打包后的隔离 Pi 验收，以及一次性 Bank 的真实 Hindsight 验收。`0.10.0` 的原生 Recall 相关性分数可在本会话 `/memory last` 中查看，本阶段**不会**启用相关性阈值过滤；阈值标定是后续独立决策。从 `0.8.3` 升级到 `0.10.0` 后若需回滚，必须恢复升级前的数据库快照，不能只切换镜像。
 
 ---
 
@@ -206,6 +206,7 @@ Project Memory 只在指定项目中使用，支持五种类型：
 - Hindsight `0.8.3` 的治理元数据来自 Document 的 `document_metadata`，不会错误依赖 Memory unit 中可能为 `null` 的 `metadata`；
 - provider 不可用或任一校验不一致时，仍会显示 ID/scope/type/status，但正文标记为 `content unavailable`，从不展示未验证正文；
 - 成功 remember、Candidate 批准、候选文本列表和 `/memory last` 会显示可用的 Memory ID；无本地行的共享 Project 回忆标记为只读，不能作为 update/forget 目标。
+- 在 Hindsight `0.10.0` 上，`/memory last` 还会显示本轮已注入条目的原生相关性分数（`final` 可大于 1；`reranker`/`semantic`/`keyword` 可为 null）。分数只存在于当前 Session 诊断中，不会写入 SQLite、Hindsight 或 Session 文件；本阶段也不会发送 `min_scores` 阈值。
 
 ---
 
@@ -629,7 +630,7 @@ Candidate 默认 30 天过期。未处理的 `pending` Candidate 到期后会原
 
 - Pi：`0.85.1` 兼容范围（`pi --version` 可确认）；
 - Node.js：`>=22.19.0`；
-- Hindsight HTTP API：`0.8.3`，需**单独启动**并可达（默认 `http://127.0.0.1:8888`）；
+- Hindsight HTTP API：精确支持 `0.8.3` 与 `0.10.0`，需**单独启动**并可达（常见本地地址 `http://127.0.0.1:8888`）；其他版本一律失败关闭；
 - 系统：macOS 或 Linux。
 
 > **说明：** 下列 GitHub 直装步骤面向公开仓库 `https://github.com/stones-hub/pi-memory-hindsight`。使用版本 tag 安装可固定代码版本；直接使用仓库 URL 安装时跟随默认分支。
@@ -676,7 +677,7 @@ pi update --extensions
 pi update --all
 ```
 
-需要固定到当前正式版本时，可使用：`pi install https://github.com/stones-hub/pi-memory-hindsight.git@v0.2.3`。需要固定到首个正式版本时，可使用 `@v0.1.0`。直接使用不带 `@ref` 的仓库 URL，则跟随默认分支。
+需要固定到当前正式版本时，可使用：`pi install https://github.com/stones-hub/pi-memory-hindsight.git@v0.3.0`。需要固定到首个正式版本时，可使用 `@v0.1.0`。直接使用不带 `@ref` 的仓库 URL，则跟随默认分支。
 
 ### 卸载
 

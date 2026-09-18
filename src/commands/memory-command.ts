@@ -32,10 +32,21 @@ import {
   runMaintenancePass,
 } from "../governance/cleanup-service.js";
 import type { MemoryType, Scope } from "../db/types.js";
+import type { RecallScores } from "../provider/types.js";
 import { parseMemoryCommand } from "./memory-command-parser.js";
 import { createCandidateReviewer } from "../ui/candidate-reviewer.js";
 import { resolveProjectBank } from "../runtime/project-runtime.js";
 import { mutationNowMs } from "../governance/mutation-clock.js";
+
+function formatLastRecallScores(language: Language, scores: RecallScores | null): string {
+  if (!scores) return "";
+  return t(language, "memory.last.scores", {
+    final: scores.final,
+    reranker: scores.reranker === null ? "null" : scores.reranker,
+    semantic: scores.semantic === null ? "null" : scores.semantic,
+    keyword: scores.keyword === null ? "null" : scores.keyword,
+  });
+}
 
 function rememberOutcomeMessage(
   language: Language,
@@ -199,20 +210,23 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
           if (!last) return void ctx.ui.notify(t(language, "memory.last.none"), "info");
           const text = [
             t(language, "memory.last.header", { count: last.items.length, when: last.injectedAt }),
-            ...last.items.map((item) =>
-              item.readOnlyShared || !item.memoryId
+            ...last.items.map((item) => {
+              const scores = formatLastRecallScores(language, item.scores);
+              return item.readOnlyShared || !item.memoryId
                 ? t(language, "memory.last.item.shared", {
                     scope: item.scope,
                     type: item.memoryType,
                     text: item.text,
+                    scores,
                   })
                 : t(language, "memory.last.item", {
                     id: item.memoryId,
                     scope: item.scope,
                     type: item.memoryType,
                     text: item.text,
-                  }),
-            ),
+                    scores,
+                  });
+            }),
           ].join("\n");
           ctx.ui.notify(text, "info");
           return;

@@ -20,6 +20,13 @@ export interface MockHindsightMode {
   latencyMs?: number;
   unhealthy?: boolean;
   malformedVersion?: boolean;
+  /** Exact `/version` api_version body. Defaults to `0.8.3`. */
+  apiVersion?: "0.8.3" | "0.10.0";
+  /**
+   * When true, recall results include a valid score object. Defaults to true
+   * for `apiVersion=0.10.0` and false for `0.8.3`.
+   */
+  includeRecallScores?: boolean;
   configDrift?: boolean;
   fail?: Partial<Record<RouteName, number>>;
   malformed?: Partial<Record<RouteName, boolean>>;
@@ -59,17 +66,26 @@ export interface MockHindsightServer {
   getBank(bankId: string): BankState | undefined;
 }
 
-const VERSION_BODY = {
-  api_version: "0.8.3",
-  features: {
-    observations: true,
-    worker: true,
-    bank_config_api: true,
-    raw_document_storage: true,
-    llm_tracing: true,
-    audit_log: false,
-  },
+const DEFAULT_VERSION_FEATURES = {
+  observations: true,
+  worker: true,
+  bank_config_api: true,
+  raw_document_storage: true,
+  llm_tracing: true,
+  audit_log: false,
 };
+
+function versionBody(apiVersion: "0.8.3" | "0.10.0"): Record<string, unknown> {
+  return {
+    api_version: apiVersion,
+    features: { ...DEFAULT_VERSION_FEATURES },
+  };
+}
+
+function defaultIncludeRecallScores(mode: MockHindsightMode): boolean {
+  if (mode.includeRecallScores !== undefined) return mode.includeRecallScores;
+  return (mode.apiVersion ?? "0.8.3") === "0.10.0";
+}
 
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { "content-type": "application/json" });
@@ -212,7 +228,7 @@ export async function startMockHindsightServer(initialMode: MockHindsightMode = 
         return json(res, 200, { api_version: 83, features: null });
       }
       finish(200, "version", null);
-      return json(res, 200, VERSION_BODY);
+      return json(res, 200, versionBody(mode.apiVersion ?? "0.8.3"));
     }
 
     const bankId = parseBankId(pathname);
@@ -356,6 +372,7 @@ export async function startMockHindsightServer(initialMode: MockHindsightMode = 
         return json(res, 200, { results: [{ id: "oops", text: 1 }] });
       }
       const bank = getOrCreateBank(bankId);
+      const withScores = defaultIncludeRecallScores(mode);
       const results = [...bank.documents.values()]
         .flat()
         .map((item) => ({
@@ -367,6 +384,16 @@ export async function startMockHindsightServer(initialMode: MockHindsightMode = 
           tags: ["pi-memory-hindsight"],
           context: null,
           mentioned_at: null,
+          ...(withScores
+            ? {
+                scores: {
+                  final: 1.0986786712451455,
+                  reranker: 0.91,
+                  semantic: null,
+                  keyword: 0.42,
+                },
+              }
+            : {}),
         }));
       finish(200, "recall", summarizeBody(parsed));
       return json(res, 200, { results });

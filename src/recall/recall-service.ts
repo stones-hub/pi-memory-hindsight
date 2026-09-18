@@ -21,7 +21,7 @@ import { resolveProjectBank } from "../runtime/project-runtime.js";
 import { capRenderedRecallItems } from "./token-budget.js";
 import { normalizeLanguage, t } from "../i18n/messages.js";
 import type { MemoryRow, MemoryType, Scope, VerificationState } from "../db/types.js";
-import type { RecallResultItem } from "../provider/types.js";
+import type { RecallResultItem, RecallScores } from "../provider/types.js";
 import { buildCurrentOwnedDocumentId, buildLegacyOwnedDocumentId, isLegacyOwnedDocumentRow, rowOwnsDocumentId, validateDocumentId, validateLegacyRetainMetadata, validateRetainMetadata } from "../provider/validation.js";
 import { looksLikeBulkContent, scanForSensitiveContent, truncateUnicode, validateMemoryText, unicodeLength } from "../security/filters.js";
 import { projectBankId } from "../identity/bank-id.js";
@@ -39,6 +39,7 @@ interface ReconciledItem {
   verificationState: VerificationState;
   memoryId: string | null;
   readOnlyShared: boolean;
+  scores: RecallScores | null;
 }
 
 const RECALL_MAX_TOKENS_PER_BANK = 2000;
@@ -240,6 +241,7 @@ function reconcile(
         verificationState: row.verification_state,
         memoryId: row.id,
         readOnlyShared: false,
+        scores: item.scores ?? null,
       });
       continue;
     }
@@ -257,6 +259,7 @@ function reconcile(
         verificationState: row.verification_state,
         memoryId: row.id,
         readOnlyShared: false,
+        scores: item.scores ?? null,
       });
       continue;
     }
@@ -270,6 +273,7 @@ function reconcile(
       verificationState: metadata.verification_state as VerificationState,
       memoryId: null,
       readOnlyShared: true,
+      scores: item.scores ?? null,
     });
   }
   return out;
@@ -394,6 +398,7 @@ export async function handleBeforeAgentStart(
       text: truncateUnicode(item.text, DIAGNOSTIC_TEXT_PREVIEW_CHARS),
       memoryId: item.memoryId,
       readOnlyShared: item.readOnlyShared,
+      scores: item.scores,
     })),
   };
 
