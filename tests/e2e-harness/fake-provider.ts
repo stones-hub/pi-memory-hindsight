@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { calculateCost, createAssistantMessageEventStream, type AssistantMessage, type Context, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { ACCEPTANCE_MARKERS, RECALL_HEADER_RE, SLOW_TURN_DELAY_MS, SLOW_TURN_TRIGGER } from "../../src/testing/acceptance-constants.js";
+import { resolveEffectiveSystemPrompt } from "./effective-system-prompt.js";
 
 function lastUserText(messages: Context["messages"]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -37,7 +38,8 @@ function assistant(model: Model<any>, text: string): AssistantMessage {
 
 function buildResponse(model: Model<any>, context: Context, _options?: SimpleStreamOptions): AssistantMessage {
   const prompt = lastUserText(context.messages);
-  if (context.systemPrompt?.includes("Output STRICTLY one JSON object")) {
+  const systemPrompt = resolveEffectiveSystemPrompt(context);
+  if (systemPrompt.includes("Output STRICTLY one JSON object")) {
     return assistant(
       model,
       JSON.stringify({
@@ -66,7 +68,7 @@ function buildResponse(model: Model<any>, context: Context, _options?: SimpleStr
       stopReason: "toolUse",
     };
   }
-  const sawRecall = RECALL_HEADER_RE.test(context.systemPrompt ?? "");
+  const sawRecall = RECALL_HEADER_RE.test(systemPrompt);
   return assistant(model, `${ACCEPTANCE_MARKERS.promptRecallSeen}${sawRecall ? "true" : "false"}`);
 }
 

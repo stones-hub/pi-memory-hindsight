@@ -214,7 +214,7 @@ The adapter must:
 8. redact response bodies in user-facing errors and logs;
 9. bound response sizes and reject malformed JSON;
 10. for negotiated `0.10.0`, require a valid Recall `scores` object on every ordinary result (`final` finite, no artificial `0..1` bound; optional component scores may be null); for `0.8.3`, absent scores remain allowed while a present object still validates;
-11. never send an automatic Recall `min_scores` threshold in this phase; score diagnostics are Session-local only and are never persisted.
+11. for negotiated `0.10.0` with a positive configured `minScore`, may send automatic Recall `min_scores.semantic` and must still filter authoritatively on the client; for `0.8.3` or a zero floor, omit `min_scores`. Score diagnostics are Session-local only and are never persisted.
 
 A capability mismatch disables memory safely and never blocks normal Pi operation.
 

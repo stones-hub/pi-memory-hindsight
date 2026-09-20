@@ -32,11 +32,12 @@ import {
   runMaintenancePass,
 } from "../governance/cleanup-service.js";
 import type { MemoryType, Scope } from "../db/types.js";
-import type { RecallScores } from "../provider/types.js";
+import type { RecallScores, SupportedApiVersion } from "../provider/types.js";
 import { parseMemoryCommand } from "./memory-command-parser.js";
 import { createCandidateReviewer } from "../ui/candidate-reviewer.js";
 import { resolveProjectBank } from "../runtime/project-runtime.js";
 import { mutationNowMs } from "../governance/mutation-clock.js";
+import { RECALL_MAX_ITEMS_LEGACY, RECALL_MAX_ITEMS_SEMANTIC } from "../recall/token-budget.js";
 
 function formatLastRecallScores(language: Language, scores: RecallScores | null): string {
   if (!scores) return "";
@@ -46,6 +47,26 @@ function formatLastRecallScores(language: Language, scores: RecallScores | null)
     semantic: scores.semantic === null ? "null" : scores.semantic,
     keyword: scores.keyword === null ? "null" : scores.keyword,
   });
+}
+
+function recallPolicyLine(
+  language: Language,
+  negotiated: SupportedApiVersion | null,
+  minScore: number,
+): string {
+  if (negotiated === "0.10.0") {
+    if (minScore > 0) {
+      return t(language, "memory.status.recall.semantic", {
+        minScore,
+        maxItems: RECALL_MAX_ITEMS_SEMANTIC,
+      });
+    }
+    return t(language, "memory.status.recall.disabled", { maxItems: RECALL_MAX_ITEMS_SEMANTIC });
+  }
+  if (negotiated === "0.8.3") {
+    return t(language, "memory.status.recall.legacy", { maxItems: RECALL_MAX_ITEMS_LEGACY });
+  }
+  return t(language, "memory.status.recall.unknown");
 }
 
 function rememberOutcomeMessage(
@@ -198,9 +219,17 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
             const providerReady = await getGlobalRuntime();
             if (!providerReady.ok) {
               lines.unshift(t(language, "memory.status.unavailable"));
+              lines.push(t(language, "memory.status.recall.unknown"));
+            } else {
+              const negotiated =
+                typeof providerReady.runtime.adapter.getNegotiatedApiVersion === "function"
+                  ? providerReady.runtime.adapter.getNegotiatedApiVersion()
+                  : null;
+              lines.push(recallPolicyLine(language, negotiated, providerReady.runtime.minScore));
             }
           } catch {
             lines.unshift(t(language, "memory.status.unavailable"));
+            lines.push(t(language, "memory.status.recall.unknown"));
           }
           ctx.ui.notify(lines.join(" "), "info");
           return;
@@ -208,6 +237,9 @@ export function registerMemoryCommand(pi: ExtensionAPI): void {
         case "last": {
           const last = getSessionState(ctx.sessionManager.getSessionId()).lastRecall;
           if (!last) return void ctx.ui.notify(t(language, "memory.last.none"), "info");
+          if (last.items.length === 0) {
+            return void ctx.ui.notify(t(language, "memory.last.empty"), "info");
+          }
           const text = [
             t(language, "memory.last.header", { count: last.items.length, when: last.injectedAt }),
             ...last.items.map((item) => {

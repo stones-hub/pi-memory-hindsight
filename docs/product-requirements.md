@@ -30,10 +30,13 @@ The global extension configuration contains only:
 
 ```json
 {
-  "url": "http://127.0.0.1:8888"
+  "url": "http://127.0.0.1:8888",
+  "minScore": 0.5
 }
 ```
 
+- `url` is the Hindsight HTTP API base URL. Omission uses `http://127.0.0.1:8888`.
+- Optional `minScore` is the minimum native Hindsight `scores.semantic` for automatic Recall on negotiated Hindsight `0.10.0`. Omission defaults to `0.5`. It must be a finite number in inclusive `0..1`. `0` disables the semantic threshold. Invalid values fail configuration closed.
 - Hindsight credentials are read only from `HINDSIGHT_API_KEY`.
 - Credentials cannot be stored in JSON.
 - Product safety and lifecycle policies are fixed defaults, not user-facing configuration.
@@ -103,9 +106,10 @@ A project without `enabled: true` receives no Project recall, extraction, creati
 - Project recall works only when `.pi/memory.json` has `enabled: true` and project identity resolves.
 - At most one automatic recall per separately submitted ordinary user input; tool loops, retries, and compaction retries do not recall again. Recall identity is derived from user-input lifecycle, not the later `turn_start.turnIndex` model-execution event.
 - A later ordinary follow-up after the current run settles is a new eligible input, even when its text is identical to an earlier input.
-- On Pi 0.85.1, user messages queued during streaming as `steer` or `followUp` are delivered inside the existing Agent loop without a new `before_agent_start` hook. They do not receive separate automatic Recall in this release and must not cause duplicate Recall or consume the next ordinary input's eligibility. Full queued-message Recall requires a future supported per-user-message, turn-specific injection hook.
-- Default injected budget: no more than 10 records and approximately 1,500 tokens total.
-- Successful injection shows a short notification. No-match is silent. `/memory last` explains retrieval, filtering, injection, token usage, and latency.
+- On Pi 0.86.0, user messages queued during streaming as `steer` or `followUp` are delivered inside the existing Agent loop without a new `before_agent_start` hook. They do not receive separate automatic Recall in this release and must not cause duplicate Recall or consume the next ordinary input's eligibility. Full queued-message Recall requires a future supported per-user-message, turn-specific injection hook.
+- Default injected budget: on Hindsight `0.10.0`, at most 3 records after semantic filtering/ranking and approximately 1,500 tokens total; on Hindsight `0.8.3`, at most 10 records and approximately 1,500 tokens with no score filtering.
+- On Hindsight `0.10.0`, automatic Recall applies the configured `minScore` semantic floor (default `0.5`) both as an optional service-side `min_scores.semantic` hint and as an authoritative extension-side filter, then ranks eligible Profile and Project items globally by semantic score. On Hindsight `0.8.3`, score filtering and semantic ranking are unavailable and legacy ordering is retained.
+- Successful injection shows a short notification. No-match is silent. `/memory last` shows only what the latest eligible ordinary input actually injected; a newer no-result Recall must not leave the previous diagnostic visible. `/memory status` reports the effective score policy and injection cap after provider negotiation.
 - Recalled memory is clearly delimited as untrusted reference data and is injected through a turn-specific system-prompt extension, not a persistent Session message.
 - Hindsight timeout or failure never blocks the Pi task.
 

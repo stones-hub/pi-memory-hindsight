@@ -28,6 +28,13 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function requireSystemPiVersion(expected = "0.86.0") {
+  const { stdout } = await execFileAsync("pi", ["--version"], { cwd: ROOT });
+  const version = String(stdout).trim();
+  assert(version === expected, `packaged acceptance requires system pi ${expected}, got ${version}`);
+  return version;
+}
+
 async function listRelativeFiles(rootDir, relativeDir) {
   const files = [];
   async function walk(current) {
@@ -92,6 +99,7 @@ function redactText(value, paths) {
 
 function ensureRequiredSuccess(evidence) {
   const required = [
+    "piVersionProven",
     "packedArtifactLoaded",
     "commandsRegistered",
     "toolRegistered",
@@ -351,8 +359,12 @@ async function runRpcPrompt(env, cwd, args, message, expectedMarker, timeoutMs =
   });
 }
 
+const piVersion = await requireSystemPiVersion("0.86.0");
 const paths = await createIsolatedPaths("pi-memory-hindsight-acceptance-");
 const evidence = {
+  piVersion,
+  piVersionProven: piVersion === "0.86.0",
+
   packedArtifactLoaded: false,
   extensionManifestEntry: null,
   packedSourceFileCount: 0,

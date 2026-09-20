@@ -65,6 +65,7 @@ Forbidden:
 
 - Approved writes require an owned Hindsight bank configured for `chunks` retain with observations and automatic consolidation disabled.
 - Recall requests only source facts and does not request raw chunk expansion.
+- On negotiated Hindsight `0.10.0`, automatic Recall may send `min_scores.semantic` when the configured floor is positive, must still filter authoritatively on the extension side, then globally sorts eligible items by semantic score and injects at most 3. On `0.8.3`, no score threshold is sent or applied.
 - Reflect is manual-only and its output remains unverified.
 - Forget uses physical document deletion plus postcondition checks; invalidation does not satisfy deletion.
 - The Extension never enumerates or probes unrelated Hindsight banks.

@@ -50,9 +50,11 @@ function makeRuntime() {
     agentDir: "/tmp/pi-agent",
     db,
     hindsightUrl: "http://127.0.0.1:8888",
+    minScore: 0.5,
     profile,
     profileBankId: profileBankId(profile.anonymous_profile_id),
     adapter: {
+      getNegotiatedApiVersion: vi.fn().mockReturnValue("0.8.3"),
       ensureOwnedBank: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
       retainOneMemory: vi.fn().mockResolvedValue({ ok: true, value: { unitId: "unit-1" } }),
       verifyOneUnitDocument: vi.fn().mockResolvedValue({ ok: false, reason: "missing", category: "http", status: 404 }),
@@ -1355,7 +1357,38 @@ describe("slice 4 governance commands and tools", () => {
     await command.handler("status", ctx);
     const [[message]] = (ctx.ui.notify as any).mock.calls;
     expect(message).toContain("项目范围：已启用（repo）");
+    expect(message).toContain("回忆过滤：Hindsight 0.8.3 不支持分数过滤，保留旧版最多 10 条。");
     expect(runtime.adapter.ensureOwnedBank).not.toHaveBeenCalled();
+  });
+
+  it("status reports 0.10.0 semantic policy variants and last shows empty injection wording", async () => {
+    const runtime = makeRuntime();
+    runtime.profile.language = "en";
+    runtime.minScore = 0.5;
+    runtime.adapter.getNegotiatedApiVersion.mockReturnValue("0.10.0");
+    getLocalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+    const { commands } = captureExtension();
+    const command = commands.get("memory");
+    const ctx = makeContext({ sessionId: "session-1" });
+
+    await command.handler("status", ctx);
+    expect(String(ctx.ui.notify.mock.calls.at(-1)?.[0])).toContain("semantic >= 0.5, max 3");
+
+    runtime.minScore = 0;
+    await command.handler("status", ctx);
+    expect(String(ctx.ui.notify.mock.calls.at(-1)?.[0])).toContain("semantic threshold disabled, max 3");
+
+    getSessionState("session-1").lastRecall = {
+      injectedAt: "2026-09-20T00:00:00.000Z",
+      promptPreview: "q",
+      items: [],
+    };
+    const providerCallsBeforeLast = getGlobalRuntimeMock.mock.calls.length;
+    await command.handler("last", ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(t("en", "memory.last.empty"), "info");
+    expect(getGlobalRuntimeMock.mock.calls.length).toBe(providerCallsBeforeLast);
   });
 
   describe("candidates approve/edit-approve commands: zero provider I/O before authorization", () => {

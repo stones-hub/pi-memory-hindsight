@@ -12,7 +12,7 @@
 
 - Interactive Pi mode only for the first release. Print, JSON, and RPC modes must have no automatic memory behavior.
 - Support macOS and Linux. Windows is out of scope.
-- Global config contains only the Hindsight API URL. Authentication, if needed, comes only from `HINDSIGHT_API_KEY`.
+- Global config contains only the Hindsight API URL and optional `minScore`. Authentication, if needed, comes only from `HINDSIGHT_API_KEY`.
 - Project config is `<git-root>/.pi/memory.json` with `enabled` and optional `project` fields only.
 - One Pi configuration directory (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`) is one Memory Profile and has one Profile Bank.
 - One normalized project identity is one Project Bank. Project identity is the lowercase `project` value when present; otherwise it is the lowercase final repository name from Git remote.
@@ -40,7 +40,7 @@
 
 ## Current technical baseline
 
-- Supported Pi baseline: `0.85.1`, Node `>=22.19.0`, interactive TUI mode only.
+- Supported Pi baseline: `0.86.0`, Node `>=22.19.0`, interactive TUI mode only.
 - Hindsight baseline: `vectorize-io/hindsight` `0.8.3`, local API at `http://127.0.0.1:8888`.
 - Owned Hindsight banks must use `chunks` retain with observations and auto-consolidation disabled; one approved logical memory maps to one dedicated document.
 - Hindsight Control Plane port `9999` is deliberately out of scope.

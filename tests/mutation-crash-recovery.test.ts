@@ -38,6 +38,7 @@ function makeRuntime() {
     agentDir: "/tmp/pi-agent",
     db,
     hindsightUrl: "http://127.0.0.1:8888",
+    minScore: 0.5,
     profile,
     profileBankId: profileBankId(profile.anonymous_profile_id),
     adapter: {

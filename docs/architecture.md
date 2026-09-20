@@ -29,7 +29,7 @@ Pi interactive session
 
 ## Runtime baseline
 
-- Supported Pi baseline: `0.85.1`.
+- Supported Pi baseline: `0.86.0`.
 - Pi requires Node `>=22.19.0`; this version includes stable `node:sqlite`.
 - Use built-in `node:sqlite` to avoid native addon and cross-platform package-install risk.
 - Support Node-run Pi on macOS and Linux. Pi standalone binaries must be treated as unsupported until a runtime probe proves `node:sqlite` is available there.
@@ -92,23 +92,23 @@ ctx.mode === "tui"
 input for an ordinary user prompt
   → allocate a bounded, in-memory per-Session input identity without retaining the prompt body
 before_agent_start for that prompt
-  → atomically claim the input identity and enforce TUI/session/per-input gate
+  → atomically claim the input identity, invalidate prior `/memory last`, and enforce TUI/session/per-input gate
   → resolve Profile and optional Project scopes
-  → query eligible banks with timeout/cancellation
+  → query eligible banks with timeout/cancellation (and optional `min_scores.semantic` on Hindsight `0.10.0`)
   → reject expired/sensitive/out-of-scope/conflicting records
-  → rank verified, current, specific items first
-  → cap at 10 items / ~1,500 tokens
+  → on `0.10.0`, authoritatively filter by configured semantic floor and rank globally by semantic score; on `0.8.3`, preserve legacy project-first governance ordering
+  → cap at 3 items (`0.10.0`) or 10 items (`0.8.3`) / ~1,500 tokens
   → append a clearly delimited untrusted memory block to this turn's system prompt
-  → record redacted diagnostics for /memory last (including validated native scores when present; never persisted)
+  → record redacted diagnostics for `/memory last` (including validated native scores when present; never persisted)
 ```
 
-Pi 0.85.1 allows `before_agent_start` to return a turn-specific `systemPrompt`. When omitted on the next turn Pi resets to the base prompt, so this avoids persisting recall as a Session message. The handler starts from `event.systemPrompt` (which includes earlier extension changes) and appends its block, preserving extension composition order. Returning `message`, or calling `sendMessage`, would persist memory content and is not used for recall injection.
+Pi 0.86.0 allows `before_agent_start` to return a turn-specific `systemPrompt`. When omitted on the next turn Pi resets to the base prompt, so this avoids persisting recall as a Session message. The handler starts from `event.systemPrompt` (which includes earlier extension changes) and appends its block, preserving extension composition order. Returning `message`, or calling `sendMessage`, would persist memory content and is not used for recall injection.
 
-Automatic Recall does not send a `min_scores` threshold in this phase. Validated native scores from Hindsight `0.10.0` (and optional present scores on `0.8.3`) are Session-local diagnostics only; they do not change injection filtering, count/token budgets, scope precedence, or safety gates. A separate calibration decision is required before any relevance threshold is enabled.
+On negotiated Hindsight `0.10.0`, automatic Recall uses the process-local effective `minScore` (default `0.5`; `0` disables the threshold). Service-side `min_scores.semantic` is an optimization only; extension-side validation and filtering are authoritative. Eligible Profile and Project items are merged and sorted by semantic descending before the item/token caps. On negotiated `0.8.3`, no score threshold is sent or applied and legacy max-10 behavior is retained. Validated scores remain Session-local diagnostics only and are never persisted to SQLite, Hindsight, or Pi Session entries.
 
-Recall must be guarded by a logical ordinary-user-input key, not `turn_start.turnIndex` or tool-loop count. Pi 0.85.1 emits `before_agent_start` before `turn_start`, so model-turn state cannot gate first-prompt Recall. The public `input` event supplies ordinary-input identity; `before_agent_start` atomically claims it before asynchronous work. A bounded Session-leaf-plus-prompt-hash fallback covers supported paths that reach `before_agent_start` without `input`, without retaining prompt bodies. Later separately submitted ordinary inputs are new identities even when their text is identical. Failures are swallowed after a short redacted warning and are not retried for the same identity.
+Recall must be guarded by a logical ordinary-user-input key, not `turn_start.turnIndex` or tool-loop count. Pi 0.86.0 emits `before_agent_start` before `turn_start`, so model-turn state cannot gate first-prompt Recall. The public `input` event supplies ordinary-input identity; `before_agent_start` atomically claims it before asynchronous work. A bounded Session-leaf-plus-prompt-hash fallback covers supported paths that reach `before_agent_start` without `input`, without retaining prompt bodies. Later separately submitted ordinary inputs are new identities even when their text is identical. Failures are swallowed after a short redacted warning and are not retried for the same identity.
 
-Pi 0.85.1 queues streaming `steer` and `followUp` user messages inside the existing Agent loop and does not emit a new `before_agent_start` when they are delivered. The Extension classifies these inputs but does not separately Recall for them, persist Recall as a message, modify Pi internals, or consume the next ordinary input's eligibility. Full queued-message Recall is deferred until a supported per-user-message turn-specific injection hook exists. See `docs/decisions/automatic-recall-turn-gating.md`.
+Pi 0.86.0 queues streaming `steer` and `followUp` user messages inside the existing Agent loop and does not emit a new `before_agent_start` when they are delivered. The Extension classifies these inputs but does not separately Recall for them, persist Recall as a message, modify Pi internals, or consume the next ordinary input's eligibility. Full queued-message Recall is deferred until a supported per-user-message turn-specific injection hook exists. See `docs/decisions/automatic-recall-turn-gating.md`.
 
 Precedence:
 

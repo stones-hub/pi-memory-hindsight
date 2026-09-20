@@ -77,12 +77,18 @@ export interface RecallInput {
   query: string;
   budget: RecallBudget;
   maxTokens: number;
+  /**
+   * Effective semantic floor from global config. Sent as `min_scores.semantic`
+   * only when negotiated API is `0.10.0` and the value is positive. Extension-
+   * side filtering remains authoritative.
+   */
+  minScore?: number;
 }
 
 /**
  * Native Recall relevance scores from Hindsight 0.10.0.
  * `final` is a finite number with no artificial 0..1 bound; optional component
- * scores may be null. Validated scores are diagnostics only in this phase.
+ * scores may be null. Validated scores are Session-local diagnostics only.
  */
 export interface RecallScores {
   final: number;

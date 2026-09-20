@@ -1119,6 +1119,76 @@ describe("HindsightAdapter", () => {
       adapter010.recall({ bankId: VALID_BANK_ID, query: "q", budget: "low", maxTokens: 100 }),
     ).resolves.toMatchObject({ ok: true, value: [{ id: "c", scores: validScores }] });
 
+    const minScoresServer = await startMockServer();
+    const minScoresAdapter = await negotiateAdapter(minScoresServer, "0.10.0");
+    minScoresServer.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res, bodyText) => {
+      expect(JSON.parse(bodyText)).toMatchObject({ min_scores: { semantic: 0.5 } });
+      json(res, 200, {
+        results: [{ id: "ms", text: "ok", type: "world", document_id: "doc-ms", scores: validScores }],
+      });
+    });
+    await expect(
+      minScoresAdapter.recall({
+        bankId: VALID_BANK_ID,
+        query: "q",
+        budget: "low",
+        maxTokens: 100,
+        minScore: 0.5,
+      }),
+    ).resolves.toMatchObject({ ok: true, value: [{ id: "ms", scores: validScores }] });
+
+    const zeroScoreServer = await startMockServer();
+    const zeroScoreAdapter = await negotiateAdapter(zeroScoreServer, "0.10.0");
+    zeroScoreServer.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res, bodyText) => {
+      expect(JSON.parse(bodyText)).not.toHaveProperty("min_scores");
+      json(res, 200, {
+        results: [{ id: "z", text: "ok", type: "world", document_id: "doc-z", scores: validScores }],
+      });
+    });
+    await expect(
+      zeroScoreAdapter.recall({
+        bankId: VALID_BANK_ID,
+        query: "q",
+        budget: "low",
+        maxTokens: 100,
+        minScore: 0,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+
+    const legacyMinServer = await startMockServer();
+    const legacyMinAdapter = await negotiateAdapter(legacyMinServer, "0.8.3");
+    legacyMinServer.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res, bodyText) => {
+      expect(JSON.parse(bodyText)).not.toHaveProperty("min_scores");
+      json(res, 200, { results: [{ id: "l", text: "ok", type: "world", document_id: "doc-l" }] });
+    });
+    await expect(
+      legacyMinAdapter.recall({
+        bankId: VALID_BANK_ID,
+        query: "q",
+        budget: "low",
+        maxTokens: 100,
+        minScore: 0.5,
+      }),
+    ).resolves.toMatchObject({ ok: true, value: [{ id: "l", scores: null }] });
+
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -0.1, 1.01] as const) {
+      const badServer = await startMockServer();
+      const badAdapter = await negotiateAdapter(badServer, "0.10.0");
+      const rejected = await badAdapter.recall({
+        bankId: VALID_BANK_ID,
+        query: "q",
+        budget: "low",
+        maxTokens: 100,
+        minScore: bad,
+      });
+      expect(rejected).toMatchObject({
+        ok: false,
+        category: "validation",
+        reason: /minScore must be a finite number/,
+      });
+      expect(badServer.requests.filter((entry) => entry.url.includes("/memories/recall"))).toHaveLength(0);
+    }
+
     const missing010 = await startMockServer();
     const adapterMissing = await negotiateAdapter(missing010, "0.10.0");
     missing010.setRoute("POST", `/v1/default/banks/${encodedBank}/memories/recall`, (_req, res) => {

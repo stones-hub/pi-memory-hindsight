@@ -16,12 +16,21 @@
 import { createHash } from "node:crypto";
 import type { BeforeAgentStartEvent, BeforeAgentStartEventResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getGlobalRuntime, type GlobalRuntime } from "../runtime/global-runtime.js";
-import { isSessionStateCurrent, tryClaimRecallInput } from "../runtime/session-runtime.js";
+import {
+  isSessionStateCurrent,
+  tryClaimRecallInput,
+  type LastRecallDiagnostic,
+  type SessionState,
+} from "../runtime/session-runtime.js";
 import { resolveProjectBank } from "../runtime/project-runtime.js";
-import { capRenderedRecallItems } from "./token-budget.js";
+import {
+  capRenderedRecallItems,
+  RECALL_MAX_ITEMS_LEGACY,
+  RECALL_MAX_ITEMS_SEMANTIC,
+} from "./token-budget.js";
 import { normalizeLanguage, t } from "../i18n/messages.js";
 import type { MemoryRow, MemoryType, Scope, VerificationState } from "../db/types.js";
-import type { RecallResultItem, RecallScores } from "../provider/types.js";
+import type { RecallResultItem, RecallScores, SupportedApiVersion } from "../provider/types.js";
 import { buildCurrentOwnedDocumentId, buildLegacyOwnedDocumentId, isLegacyOwnedDocumentRow, rowOwnsDocumentId, validateDocumentId, validateLegacyRetainMetadata, validateRetainMetadata } from "../provider/validation.js";
 import { looksLikeBulkContent, scanForSensitiveContent, truncateUnicode, validateMemoryText, unicodeLength } from "../security/filters.js";
 import { projectBankId } from "../identity/bank-id.js";
@@ -188,7 +197,13 @@ async function recallFromBank(
   signal: AbortSignal,
 ): Promise<ReconciledItem[]> {
   const result = await runtime.adapter.recall(
-    { bankId: bank.bankId, query, budget: "mid", maxTokens: RECALL_MAX_TOKENS_PER_BANK },
+    {
+      bankId: bank.bankId,
+      query,
+      budget: "mid",
+      maxTokens: RECALL_MAX_TOKENS_PER_BANK,
+      minScore: runtime.minScore,
+    },
     signal,
   );
   if (!result.ok) return [];
@@ -308,7 +323,8 @@ function isEligibleSharedProjectMetadata(
 function renderRecallBlock(
   language: "en" | "zh",
   items: ReconciledItem[],
-): string {
+  maxItems: number,
+): { block: string; injected: ReconciledItem[] } {
   const fixedPrefix = [t(language, "recall.block.header"), t(language, "recall.block.disclaimer")];
   const renderItem = (item: ReconciledItem) => {
     const suffix =
@@ -317,8 +333,67 @@ function renderRecallBlock(
         : "";
     return t(language, "recall.block.item", { scope: item.scope, type: item.memoryType, text: `${item.text}${suffix}` });
   };
-  const capped = capRenderedRecallItems(items, fixedPrefix, renderItem);
-  return [...fixedPrefix, ...capped.map(renderItem)].join("\n");
+  const capped = capRenderedRecallItems(items, fixedPrefix, renderItem, maxItems);
+  return {
+    block: [...fixedPrefix, ...capped.map(renderItem)].join("\n"),
+    injected: capped,
+  };
+}
+
+function passesSemanticThreshold(item: ReconciledItem, minScore: number): boolean {
+  if (!(minScore > 0)) return true;
+  const semantic = item.scores?.semantic;
+  return typeof semantic === "number" && Number.isFinite(semantic) && semantic >= minScore;
+}
+
+function compareLegacyOrder(a: ReconciledItem, b: ReconciledItem): number {
+  if (a.scope !== b.scope) return a.scope === "project" ? -1 : 1;
+  if (a.verificationState !== b.verificationState) return a.verificationState === "verified" ? -1 : 1;
+  if (a.memoryType === "inference" && b.memoryType !== "inference") return 1;
+  if (b.memoryType === "inference" && a.memoryType !== "inference") return -1;
+  return 0;
+}
+
+function compareSemanticOrder(a: ReconciledItem, b: ReconciledItem): number {
+  const aSemantic = a.scores?.semantic;
+  const bSemantic = b.scores?.semantic;
+  const aNull = aSemantic === null || aSemantic === undefined || !Number.isFinite(aSemantic);
+  const bNull = bSemantic === null || bSemantic === undefined || !Number.isFinite(bSemantic);
+  if (aNull !== bNull) return aNull ? 1 : -1;
+  if (!aNull && !bNull && aSemantic !== bSemantic) return (bSemantic as number) - (aSemantic as number);
+  if (a.verificationState !== b.verificationState) return a.verificationState === "verified" ? -1 : 1;
+  if (a.memoryType === "inference" && b.memoryType !== "inference") return 1;
+  if (b.memoryType === "inference" && a.memoryType !== "inference") return -1;
+  if (a.scope !== b.scope) return a.scope === "project" ? -1 : 1;
+  const idA = a.memoryId ?? a.text;
+  const idB = b.memoryId ?? b.text;
+  if (idA < idB) return -1;
+  if (idA > idB) return 1;
+  return 0;
+}
+
+function rankAndFilterMerged(
+  profileItems: ReconciledItem[],
+  projectItems: ReconciledItem[],
+  negotiated: SupportedApiVersion | null,
+  minScore: number,
+): { items: ReconciledItem[]; maxItems: number } {
+  if (negotiated === "0.10.0") {
+    const merged = [...projectItems, ...profileItems].filter((item) => passesSemanticThreshold(item, minScore));
+    merged.sort(compareSemanticOrder);
+    return { items: merged, maxItems: RECALL_MAX_ITEMS_SEMANTIC };
+  }
+  const merged = [...projectItems, ...profileItems].sort(compareLegacyOrder);
+  return { items: merged, maxItems: RECALL_MAX_ITEMS_LEGACY };
+}
+
+function recordEmptyLastRecall(state: SessionState, promptPreview: string): void {
+  const diagnostic: LastRecallDiagnostic = {
+    injectedAt: new Date().toISOString(),
+    promptPreview: promptPreview.slice(0, 80),
+    items: [],
+  };
+  state.lastRecall = diagnostic;
 }
 
 export async function handleBeforeAgentStart(
@@ -332,13 +407,16 @@ export async function handleBeforeAgentStart(
   // await): an off input must still be consumed here so that a later
   // duplicate before_agent_start callback for the same input — reached
   // after memory is switched back on — finds the identity already claimed
-  // and does not retroactively Recall for it.
+  // and does not retroactively Recall for it. Invalidate prior diagnostics
+  // immediately so a later no-result/failure cannot leave stale `/memory last`.
   const claim = tryClaimRecallInput(sessionId, { leafId: ctx.sessionManager.getLeafId(), prompt: event.prompt });
   if (!claim) return;
+  recordEmptyLastRecall(claim.state, "");
   if (claim.state.memoryOff) return;
 
   const query = truncateUnicode(typeof event.prompt === "string" ? event.prompt.trim() : "", MAX_QUERY_CHARS);
   if (!query) return;
+  recordEmptyLastRecall(claim.state, query);
   if (scanForSensitiveContent(query).sensitive) return;
   if (looksLikeBulkContent(query)) return;
 
@@ -376,23 +454,22 @@ export async function handleBeforeAgentStart(
 
   const profileItems = settled[0]?.status === "fulfilled" ? settled[0].value : [];
   const projectItems = projectBank.enabled && settled[1]?.status === "fulfilled" ? settled[1].value : [];
-  const merged = [...projectItems, ...profileItems].sort((a, b) => {
-    if (a.scope !== b.scope) return a.scope === "project" ? -1 : 1;
-    if (a.verificationState !== b.verificationState) return a.verificationState === "verified" ? -1 : 1;
-    if (a.memoryType === "inference" && b.memoryType !== "inference") return 1;
-    if (b.memoryType === "inference" && a.memoryType !== "inference") return -1;
-    return 0;
-  });
+  const negotiated =
+    typeof runtime.adapter.getNegotiatedApiVersion === "function"
+      ? runtime.adapter.getNegotiatedApiVersion()
+      : null;
+  const ranked = rankAndFilterMerged(profileItems, projectItems, negotiated, runtime.minScore);
   const language = normalizeLanguage(runtime.profile.language);
-  const block = renderRecallBlock(language, merged);
-  const blockLines = block.split("\n");
-  const itemCount = Math.max(0, blockLines.length - 2);
-  if (itemCount === 0) return;
+  const { block, injected } = renderRecallBlock(language, ranked.items, ranked.maxItems);
+  if (injected.length === 0) {
+    recordEmptyLastRecall(claim.state, query);
+    return;
+  }
 
   claim.state.lastRecall = {
     injectedAt: new Date().toISOString(),
     promptPreview: query.slice(0, 80),
-    items: merged.slice(0, itemCount).map((item) => ({
+    items: injected.map((item) => ({
       scope: item.scope,
       memoryType: item.memoryType,
       text: truncateUnicode(item.text, DIAGNOSTIC_TEXT_PREVIEW_CHARS),
@@ -403,7 +480,7 @@ export async function handleBeforeAgentStart(
   };
 
   try {
-    ctx.ui.notify(t(language, "recall.notified", { count: itemCount }), "info");
+    ctx.ui.notify(t(language, "recall.notified", { count: injected.length }), "info");
   } catch {
     // UI failure must not erase an otherwise valid prompt result.
   }

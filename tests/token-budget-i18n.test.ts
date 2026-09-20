@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { capRecallItems, estimateTokens, RECALL_MAX_ITEMS, RECALL_MAX_TOKENS } from "../src/recall/token-budget.js";
+import {
+  capRecallItems,
+  capRenderedRecallItems,
+  estimateTokens,
+  RECALL_MAX_ITEMS,
+  RECALL_MAX_ITEMS_SEMANTIC,
+  RECALL_MAX_TOKENS,
+} from "../src/recall/token-budget.js";
 import {
   detectLanguageFromEnv,
   detectLanguageFromLocale,
@@ -18,6 +25,14 @@ describe("token budget", () => {
     expect(capped.reduce((sum, item) => sum + estimateTokens(item.text), 0)).toBeLessThanOrEqual(
       RECALL_MAX_TOKENS,
     );
+  });
+
+  it("supports the semantic 0.10.0 max-3 item ceiling without weakening the token budget", () => {
+    const four = Array.from({ length: 4 }, (_, i) => ({ text: `short-${i}` }));
+    expect(capRecallItems(four, RECALL_MAX_ITEMS_SEMANTIC)).toHaveLength(3);
+    expect(
+      capRenderedRecallItems(four, ["header", "disclaimer"], (item) => `- ${item.text}`, RECALL_MAX_ITEMS_SEMANTIC),
+    ).toHaveLength(3);
   });
 
   it("does not undercount CJK text as chars divided by four", () => {
@@ -41,7 +56,7 @@ describe("i18n", () => {
     expect(t("zh", "nonexistent.key")).toBe("nonexistent.key");
   });
 
-  it("formats optional recall score diagnostics without inventing thresholds", () => {
+  it("formats optional recall score diagnostics and empty-injection wording", () => {
     expect(
       t("en", "memory.last.item", {
         id: "m1",
@@ -65,6 +80,11 @@ describe("i18n", () => {
         scores: "",
       }),
     ).toBe("- m1 [profile/preference] Prefer concise answers.");
+    expect(t("en", "memory.last.empty")).toContain("injected no memory");
+    expect(t("zh", "memory.last.empty")).toContain("未注入");
+    expect(t("en", "memory.status.recall.semantic", { minScore: 0.5, maxItems: 3 })).toContain("semantic >= 0.5");
+    expect(t("en", "memory.status.recall.disabled", { maxItems: 3 })).toContain("disabled");
+    expect(t("en", "memory.status.recall.legacy", { maxItems: 10 })).toContain("0.8.3");
   });
 
   it("covers every supported /memory command form in grouped bilingual help", () => {

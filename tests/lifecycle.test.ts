@@ -51,8 +51,10 @@ function makeRuntime() {
     agentDir: "/tmp/pi-agent",
     db,
     hindsightUrl: "http://127.0.0.1:8888",
+    minScore: 0.5,
     adapter: {
       recall: vi.fn(),
+      getNegotiatedApiVersion: vi.fn().mockReturnValue("0.8.3"),
       ensureOwnedBank: vi.fn().mockResolvedValue({ ok: true, value: undefined }),
       retainOneMemory: vi.fn().mockResolvedValue({ ok: true, value: { unitId: "unit-1" } }),
       verifyOneUnitDocument: vi.fn().mockResolvedValue({ ok: false, reason: "missing", category: "http", status: 404 }),
@@ -1380,6 +1382,439 @@ describe("automatic recall lifecycle", () => {
     expect(result).toBeUndefined();
     expect(ctx.ui.notify).not.toHaveBeenCalled();
     expect(getGlobalRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  function seedLocalMemory(
+    runtime: ReturnType<typeof makeRuntime>,
+    opts: {
+      scope: "profile" | "project";
+      text: string;
+      memoryType?: "preference" | "habit" | "project_fact" | "decision" | "lesson" | "task_state" | "inference";
+      projectIdentity?: string;
+      verificationState?: "verified" | "unverified";
+      id?: string;
+    },
+  ) {
+    const id = opts.id ?? randomUUID();
+    const textHash = sha256(opts.text);
+    const memoryType = opts.memoryType ?? (opts.scope === "profile" ? "preference" : "project_fact");
+    const verificationState =
+      opts.verificationState ?? (memoryType === "inference" ? "unverified" : "verified");
+    const projectIdentity = opts.scope === "project" ? (opts.projectIdentity ?? "repo") : null;
+    const documentId = buildOwnedDocumentId(opts.scope, projectIdentity, memoryType, id);
+    const createdAt = new Date(Date.now() - 60_000).toISOString();
+    const updatedAt = new Date(Date.now() - 30_000).toISOString();
+    const expiresAt =
+      opts.scope === "project"
+        ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
+        : null;
+    runtime.repos.memories.create({
+      id,
+      scope: opts.scope,
+      memoryType,
+      projectIdentity,
+      bankId: opts.scope === "profile" ? runtime.profileBankId : projectBankId(projectIdentity!),
+      documentId,
+      unitId: `u-${id.slice(0, 8)}`,
+      textHash,
+      textLength: opts.text.length,
+      verificationState,
+      sourceSessionId: null,
+      sourceRef: null,
+      supersedesMemoryId: null,
+      expiresAt,
+      createdAt,
+      updatedAt,
+      lastVerifiedAt: verificationState === "verified" ? updatedAt : null,
+    });
+    return {
+      id,
+      text: opts.text,
+      documentId,
+      textHash,
+      createdAt,
+      updatedAt,
+      expiresAt,
+      projectIdentity,
+      memoryType,
+      verificationState,
+      recallItem: (scores: { final: number; reranker: number | null; semantic: number | null; keyword: number | null } | null) => ({
+        id: `r-${id.slice(0, 8)}`,
+        text: opts.text,
+        type: "world" as const,
+        documentId,
+        metadata: {
+          logical_id: id,
+          content_hash: textHash,
+          scope: opts.scope,
+          memory_type: memoryType,
+          verification_state: verificationState,
+          created_at: createdAt,
+          updated_at: updatedAt,
+          ...(verificationState === "verified" ? { last_verified_at: updatedAt } : {}),
+          ...(expiresAt ? { expires_at: expiresAt } : {}),
+          ...(projectIdentity ? { project_identity: projectIdentity } : {}),
+        },
+        tags: null,
+        context: null,
+        mentionedAt: null,
+        scores,
+      }),
+    };
+  }
+
+  it("on 0.10.0 filters by semantic threshold authoritatively, keeps inclusive boundary, and sorts globally by semantic", async () => {
+    const runtime = makeRuntime();
+    runtime.minScore = 0.5;
+    runtime.adapter.getNegotiatedApiVersion.mockReturnValue("0.10.0");
+    const projectIdentity = "repo";
+    const low = seedLocalMemory(runtime, { scope: "project", text: "Low relevance project note.", projectIdentity });
+    const boundary = seedLocalMemory(runtime, { scope: "profile", text: "Boundary preference at exactly 0.5." });
+    const highProfile = seedLocalMemory(runtime, { scope: "profile", text: "High relevance profile preference." });
+    const highProject = seedLocalMemory(runtime, {
+      scope: "project",
+      text: "Slightly lower but still high project fact.",
+      projectIdentity,
+    });
+    const nullSemantic = seedLocalMemory(runtime, { scope: "profile", text: "Null semantic preference." });
+
+    runtime.adapter.recall.mockImplementation(async (input: { bankId: string }) => {
+      expect(input).toMatchObject({ minScore: 0.5 });
+      if (input.bankId === runtime.profileBankId) {
+        return {
+          ok: true,
+          value: [
+            boundary.recallItem({ final: 1, reranker: null, semantic: 0.5, keyword: null }),
+            highProfile.recallItem({ final: 1, reranker: null, semantic: 0.9, keyword: null }),
+            nullSemantic.recallItem({ final: 1, reranker: null, semantic: null, keyword: null }),
+          ],
+        };
+      }
+      return {
+        ok: true,
+        value: [
+          low.recallItem({ final: 1, reranker: null, semantic: 0.49, keyword: null }),
+          highProject.recallItem({ final: 1, reranker: null, semantic: 0.8, keyword: null }),
+        ],
+      };
+    });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({
+      enabled: true,
+      identity: projectIdentity,
+      bankId: projectBankId(projectIdentity),
+    });
+
+    noteOrdinaryInput("session-1");
+    const result = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "relevant?", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(result?.systemPrompt).toContain(highProfile.text);
+    expect(result?.systemPrompt).toContain(highProject.text);
+    expect(result?.systemPrompt).toContain(boundary.text);
+    expect(result?.systemPrompt).not.toContain(low.text);
+    expect(result?.systemPrompt).not.toContain(nullSemantic.text);
+    expect(result?.systemPrompt?.indexOf(highProfile.text)).toBeLessThan(
+      result?.systemPrompt?.indexOf(highProject.text) ?? Infinity,
+    );
+    expect(result?.systemPrompt?.indexOf(highProject.text)).toBeLessThan(
+      result?.systemPrompt?.indexOf(boundary.text) ?? Infinity,
+    );
+    const last = getSessionState("session-1").lastRecall;
+    expect(last?.items.map((item) => item.text)).toEqual([highProfile.text, highProject.text, boundary.text]);
+  });
+
+  it("on 0.10.0 caps at 3 items without padding from rejected scores, and zero threshold preserves null semantics under the cap", async () => {
+    const runtime = makeRuntime();
+    runtime.minScore = 0.5;
+    runtime.adapter.getNegotiatedApiVersion.mockReturnValue("0.10.0");
+    const items = [0.95, 0.9, 0.85, 0.8, 0.75].map((semantic, index) =>
+      seedLocalMemory(runtime, { scope: "profile", text: `Eligible preference ${index} score ${semantic}.` }),
+    );
+    runtime.adapter.recall.mockResolvedValue({
+      ok: true,
+      value: items.map((item, index) =>
+        item.recallItem({ final: 1, reranker: null, semantic: [0.95, 0.9, 0.85, 0.8, 0.75][index]!, keyword: null }),
+      ),
+    });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+
+    noteOrdinaryInput("session-1");
+    const capped = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "cap?", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(getSessionState("session-1").lastRecall?.items).toHaveLength(3);
+    expect(capped?.systemPrompt).toContain(items[0]!.text);
+    expect(capped?.systemPrompt).toContain(items[2]!.text);
+    expect(capped?.systemPrompt).not.toContain(items[3]!.text);
+
+    runtime.minScore = 0;
+    const nullItem = seedLocalMemory(runtime, { scope: "profile", text: "Null semantic allowed when disabled." });
+    runtime.adapter.recall.mockResolvedValue({
+      ok: true,
+      value: [nullItem.recallItem({ final: 1, reranker: null, semantic: null, keyword: null })],
+    });
+    noteOrdinaryInput("session-1");
+    const zeroThreshold = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "zero?", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(zeroThreshold?.systemPrompt).toContain(nullItem.text);
+    expect(runtime.adapter.recall.mock.calls.at(-1)?.[0]).toMatchObject({ minScore: 0 });
+  });
+
+  it("on 0.8.3 keeps legacy project-first ordering, max 10, and still passes minScore without semantic filtering", async () => {
+    const runtime = makeRuntime();
+    runtime.minScore = 0.5;
+    runtime.adapter.getNegotiatedApiVersion.mockReturnValue("0.8.3");
+    const projectIdentity = "repo";
+    const profile = seedLocalMemory(runtime, { scope: "profile", text: "Legacy profile preference." });
+    const project = seedLocalMemory(runtime, {
+      scope: "project",
+      text: "Legacy project fact.",
+      projectIdentity,
+    });
+    runtime.adapter.recall.mockImplementation(async (input: { bankId: string; minScore?: number }) => {
+      expect(input.minScore).toBe(0.5);
+      if (input.bankId === runtime.profileBankId) {
+        return { ok: true, value: [profile.recallItem(null)] };
+      }
+      return { ok: true, value: [project.recallItem(null)] };
+    });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({
+      enabled: true,
+      identity: projectIdentity,
+      bankId: projectBankId(projectIdentity),
+    });
+
+    noteOrdinaryInput("session-1");
+    const result = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "legacy?", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(result?.systemPrompt?.indexOf(project.text)).toBeLessThan(
+      result?.systemPrompt?.indexOf(profile.text) ?? Infinity,
+    );
+  });
+
+  it("on 0.10.0 equal-semantic ties use approved governance order: verified, non-inference, project, then memoryId", async () => {
+    const runtime = makeRuntime();
+    runtime.minScore = 0.5;
+    runtime.adapter.getNegotiatedApiVersion.mockReturnValue("0.10.0");
+    const projectIdentity = "repo";
+    const equal = { final: 1, reranker: null, semantic: 0.8, keyword: null } as const;
+    const unverifiedProfile = seedLocalMemory(runtime, {
+      scope: "profile",
+      text: "Tie unverified profile preference.",
+      verificationState: "unverified",
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+    const verifiedProfile = seedLocalMemory(runtime, {
+      scope: "profile",
+      text: "Tie verified profile preference.",
+      verificationState: "verified",
+      id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    });
+    const verifiedProject = seedLocalMemory(runtime, {
+      scope: "project",
+      text: "Tie verified project fact.",
+      memoryType: "project_fact",
+      projectIdentity,
+      verificationState: "verified",
+      id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    });
+    const inferenceProject = seedLocalMemory(runtime, {
+      scope: "project",
+      text: "Tie unverified project inference.",
+      memoryType: "inference",
+      projectIdentity,
+      verificationState: "unverified",
+      id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    });
+    const idEarlier = seedLocalMemory(runtime, {
+      scope: "profile",
+      text: "Tie id-earlier verified preference.",
+      verificationState: "verified",
+      id: "11111111-1111-4111-8111-111111111111",
+    });
+    const idLater = seedLocalMemory(runtime, {
+      scope: "profile",
+      text: "Tie id-later verified preference.",
+      verificationState: "verified",
+      id: "99999999-9999-4999-8999-999999999999",
+    });
+
+    runtime.adapter.recall.mockImplementation(async (input: { bankId: string }) => {
+      if (input.bankId === runtime.profileBankId) {
+        // Deliberately shuffled so sort cannot rely on provider order.
+        return {
+          ok: true,
+          value: [
+            idLater.recallItem(equal),
+            unverifiedProfile.recallItem(equal),
+            verifiedProfile.recallItem(equal),
+            idEarlier.recallItem(equal),
+          ],
+        };
+      }
+      return {
+        ok: true,
+        value: [inferenceProject.recallItem(equal), verifiedProject.recallItem(equal)],
+      };
+    });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({
+      enabled: true,
+      identity: projectIdentity,
+      bankId: projectBankId(projectIdentity),
+    });
+
+    noteOrdinaryInput("session-1");
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "ties?", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    // Cap 3: verified project, then verified profiles by memoryId ascending (id-earlier before id-later
+    // and before verifiedProfile whose id starts with 'b').
+    expect(getSessionState("session-1").lastRecall?.items.map((item) => item.text)).toEqual([
+      verifiedProject.text,
+      idEarlier.text,
+      idLater.text,
+    ]);
+
+    // Second claim with only the remaining equal-score items proves type/scope/verification tails.
+    runtime.adapter.recall.mockImplementation(async (input: { bankId: string }) => {
+      if (input.bankId === runtime.profileBankId) {
+        return {
+          ok: true,
+          value: [unverifiedProfile.recallItem(equal), verifiedProfile.recallItem(equal)],
+        };
+      }
+      return { ok: true, value: [inferenceProject.recallItem(equal)] };
+    });
+    noteOrdinaryInput("session-1");
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "ties-tail?", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(getSessionState("session-1").lastRecall?.items.map((item) => item.text)).toEqual([
+      verifiedProfile.text,
+      unverifiedProfile.text,
+      inferenceProject.text,
+    ]);
+  });
+
+  it("on 0.8.3 caps exactly at 10 when more than 10 short eligible items are available", async () => {
+    const runtime = makeRuntime();
+    runtime.minScore = 0.5;
+    runtime.adapter.getNegotiatedApiVersion.mockReturnValue("0.8.3");
+    const items = Array.from({ length: 12 }, (_, index) =>
+      seedLocalMemory(runtime, {
+        scope: "profile",
+        text: `L${String(index).padStart(2, "0")}`,
+        id: `${String(index).padStart(8, "0")}-0000-4000-8000-000000000000`,
+      }),
+    );
+    runtime.adapter.recall.mockResolvedValue({
+      ok: true,
+      value: items.map((item) => item.recallItem(null)),
+    });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+
+    noteOrdinaryInput("session-1");
+    const result = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "legacy-cap?", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    const injected = getSessionState("session-1").lastRecall?.items ?? [];
+    expect(injected).toHaveLength(10);
+    expect(injected.map((item) => item.text)).toEqual(items.slice(0, 10).map((item) => item.text));
+    expect(result?.systemPrompt).toContain("L00");
+    expect(result?.systemPrompt).toContain("L09");
+    expect(result?.systemPrompt).not.toContain("L10");
+    expect(result?.systemPrompt).not.toContain("L11");
+    // Short texts must not hit the ~1500-token ceiling before the item cap.
+    expect(estimateTokens(result?.systemPrompt ?? "")).toBeLessThan(1500);
+  });
+
+  it("clears stale /memory last on a newer claimed input with no injectable result", async () => {
+    const runtime = makeRuntime();
+    runtime.minScore = 0.5;
+    runtime.adapter.getNegotiatedApiVersion.mockReturnValue("0.10.0");
+    const kept = seedLocalMemory(runtime, { scope: "profile", text: "Previously injected preference." });
+    runtime.adapter.recall.mockResolvedValueOnce({
+      ok: true,
+      value: [kept.recallItem({ final: 1, reranker: null, semantic: 0.9, keyword: null })],
+    });
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+
+    noteOrdinaryInput("session-1");
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "first", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(getSessionState("session-1").lastRecall?.items).toHaveLength(1);
+
+    runtime.adapter.recall.mockResolvedValueOnce({
+      ok: true,
+      value: [kept.recallItem({ final: 1, reranker: null, semantic: 0.1, keyword: null })],
+    });
+    noteOrdinaryInput("session-1");
+    const second = await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "second", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(second).toBeUndefined();
+    expect(getSessionState("session-1").lastRecall?.items).toEqual([]);
+    expect(getSessionState("session-1").lastRecall?.promptPreview).toBe("second");
+  });
+
+  it("invalidates lastRecall before async work for sensitive prompts and provider failures", async () => {
+    const runtime = makeRuntime();
+    getSessionState("session-1").lastRecall = {
+      injectedAt: "2026-01-01T00:00:00.000Z",
+      promptPreview: "old",
+      items: [
+        {
+          scope: "profile",
+          memoryType: "preference",
+          text: "stale",
+          memoryId: "m1",
+          readOnlyShared: false,
+          scores: null,
+        },
+      ],
+    };
+    getGlobalRuntimeMock.mockResolvedValue({ ok: true, runtime });
+    resolveProjectBankMock.mockResolvedValue({ enabled: false, reason: "disabled" });
+
+    noteOrdinaryInput("session-1");
+    await handleBeforeAgentStart(
+      {
+        type: "before_agent_start",
+        prompt: "Authorization: Bearer topsecret-token",
+        systemPrompt: "BASE",
+        systemPromptOptions: {} as any,
+      },
+      makeContext() as any,
+    );
+    expect(runtime.adapter.recall).not.toHaveBeenCalled();
+    expect(getSessionState("session-1").lastRecall?.items).toEqual([]);
+
+    runtime.adapter.recall.mockResolvedValue({ ok: false, reason: "timeout", category: "timeout" });
+    noteOrdinaryInput("session-1");
+    await handleBeforeAgentStart(
+      { type: "before_agent_start", prompt: "provider fail", systemPrompt: "BASE", systemPromptOptions: {} as any },
+      makeContext() as any,
+    );
+    expect(getSessionState("session-1").lastRecall?.items).toEqual([]);
+    expect(getSessionState("session-1").lastRecall?.promptPreview).toBe("provider fail");
   });
 });
 

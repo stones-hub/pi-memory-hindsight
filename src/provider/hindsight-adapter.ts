@@ -828,10 +828,11 @@ export class HindsightAdapter {
   /**
    * Recalls only source fact types with all optional expansions disabled and
    * a bounded provider budget. Requires a prior successful `checkCompatibility`
-   * on this instance. Automatic Recall never sends `min_scores`. Score presence
-   * is required for negotiated `0.10.0` and optional for `0.8.3`; a present
-   * object always validates strictly. Extension-side scope/lifecycle/
-   * sensitivity/conflict/count/token filtering happens in the recall pipeline.
+   * on this instance. For negotiated `0.10.0` with a positive `minScore`, sends
+   * `min_scores.semantic`; otherwise omits the field. Score presence is required
+   * for negotiated `0.10.0` and optional for `0.8.3`; a present object always
+   * validates strictly. Extension-side scope/lifecycle/sensitivity/conflict/
+   * semantic-threshold/count/token filtering happens in the recall pipeline.
    */
   async recall(input: RecallInput, signal?: AbortSignal): Promise<ProviderResult<RecallResultItem[]>> {
     const negotiated = this.negotiatedApiVersion;
@@ -855,6 +856,17 @@ export class HindsightAdapter {
     if (input.budget !== "low" && input.budget !== "mid" && input.budget !== "high") {
       return { ok: false, reason: "recall rejected: invalid budget", category: "validation" };
     }
+    const minScore = input.minScore;
+    if (minScore !== undefined) {
+      if (typeof minScore !== "number" || !Number.isFinite(minScore) || minScore < 0 || minScore > 1) {
+        return {
+          ok: false,
+          reason: "recall rejected: minScore must be a finite number in the inclusive range 0..1",
+          category: "validation",
+        };
+      }
+    }
+    const sendMinScores = negotiated === "0.10.0" && typeof minScore === "number" && minScore > 0;
     const result = await this.client.recall(
       input.bankId,
       {
@@ -863,6 +875,7 @@ export class HindsightAdapter {
         budget: input.budget,
         max_tokens: queryValue.maxTokens,
         include: { entities: null, chunks: null, source_facts: null },
+        ...(sendMinScores ? { min_scores: { semantic: minScore } } : {}),
       },
       signal,
     );

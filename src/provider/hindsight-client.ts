@@ -90,7 +90,10 @@ export interface DocumentGetResponseWire {
   observation_scopes?: Record<string, unknown>;
 }
 
-/** Optional score-threshold request fields; automatic Recall never sends these. */
+/**
+ * Optional score-threshold request fields. Automatic Recall may send only
+ * `semantic` for negotiated `0.10.0` when the configured floor is positive.
+ */
 export interface RecallMinScoresWire {
   final?: number;
   reranker?: number;
@@ -115,7 +118,7 @@ export interface RecallRequestWire {
     chunks?: null;
     source_facts?: null;
   };
-  /** Typed for completeness; automatic Recall omits this field entirely. */
+  /** Sent only for negotiated `0.10.0` with a positive semantic floor. */
   min_scores?: RecallMinScoresWire;
 }
 

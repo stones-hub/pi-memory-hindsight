@@ -74,8 +74,16 @@ export async function writeProjectMemoryConfig(projectDir: string, config: { ena
   await writeFile(path.join(piDir, "memory.json"), `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
-export async function writeGlobalMemoryConfig(agentDir: string, url: string): Promise<void> {
-  await writeFile(path.join(agentDir, "memory-hindsight.json"), `${JSON.stringify({ url }, null, 2)}\n`, "utf8");
+export async function writeGlobalMemoryConfig(
+  agentDir: string,
+  url: string,
+  options?: { minScore?: number },
+): Promise<void> {
+  const body: { url: string; minScore?: number } = { url };
+  if (options?.minScore !== undefined) {
+    body.minScore = options.minScore;
+  }
+  await writeFile(path.join(agentDir, "memory-hindsight.json"), `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
 
 export function buildIsolatedPiEnv(paths: IsolatedPaths, extraEnv: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {

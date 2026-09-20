@@ -1,6 +1,6 @@
 # Acceptance Plan
 
-Status: Slice 5 plus retention/discovery follow-up was **accepted** by Pi (2026-09-09) on baseline `4fce7f1ef466cece83de34579b51df6f34c2e1c1`. The later uncommitted `/memory help` command task is also **accepted locally by Pi**: it adds a public TUI help entrypoint plus required booleans `memoryHelpWorked` and `memoryHelpDidNotCreateSqlite`. Prior packaged PASS hashes are superseded for this candidate. **Commit authorization has not been granted.**
+Status: Configurable semantic Recall filtering is **accepted locally by Pi** on baseline `94b16f04957c7688ba5c6d3bba0cd0484bc979d7` and is being prepared as the authorized `v0.3.1` release. Current release-candidate verification is recorded in `HANDOVER.md`; historical evidence below remains for provenance and must not replace the current `0.3.1` results.
 
 ## Evidence layers (do not conflate)
 
@@ -84,8 +84,9 @@ There is no remaining packaged-acceptance gap; `npm run acceptance:pi` hard-fail
 14. Print, JSON, and RPC modes perform no automatic memory behavior.
 15. Physical forget deletes the target's dedicated Hindsight document, verifies post-delete absence, removes it from future recall, and stores no body in local audit. Project forget requires the currently enabled cwd project identity.
 16. Recall injection changes only the current turn's system prompt and creates no recall message in the Session file.
-17. An approved atomic candidate produces exactly one exact-text Hindsight source unit without Hindsight generative extraction or observation consolidation.
-18. Repeating an ambiguous write under the same logical ID reconciles through the same document ID and creates no duplicate document.
+17. On Hindsight `0.10.0`, omitted global `minScore` acts as `0.5`; positive thresholds appear as request `min_scores.semantic` and are enforced client-side; injection is globally semantic-sorted and capped at 3; a later no-result ordinary input in the same Session clears stale `/memory last`. On `0.8.3`, score filtering remains unavailable and legacy max-10 behavior is retained.
+18. An approved atomic candidate produces exactly one exact-text Hindsight source unit without Hindsight generative extraction or observation consolidation.
+19. Repeating an ambiguous write under the same logical ID reconciles through the same document ID and creates no duplicate document.
 
 ## Safety acceptance
 

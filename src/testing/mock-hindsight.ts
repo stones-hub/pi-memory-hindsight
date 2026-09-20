@@ -50,6 +50,12 @@ interface MemoryUnit {
   documentId: string;
   metadata: Record<string, string>;
   state: "valid";
+  scores?: {
+    final: number;
+    reranker: number | null;
+    semantic: number | null;
+    keyword: number | null;
+  };
 }
 
 interface BankState {
@@ -64,6 +70,17 @@ export interface MockHindsightServer {
   reset(): void;
   close(): Promise<void>;
   getBank(bankId: string): BankState | undefined;
+  /** Override Recall scores for an existing retained document (does not filter by min_scores). */
+  setDocumentScores(
+    bankId: string,
+    documentId: string,
+    scores: {
+      final: number;
+      reranker: number | null;
+      semantic: number | null;
+      keyword: number | null;
+    },
+  ): boolean;
 }
 
 const DEFAULT_VERSION_FEATURES = {
@@ -146,6 +163,16 @@ function summarizeBody(value: unknown): Record<string, unknown> | null {
     return {
       keys: Object.keys(body).sort(),
       updateKeys: Object.keys(body.updates as Record<string, unknown>).sort(),
+    };
+  }
+  if (typeof body.query === "string") {
+    const markers = [];
+    if (body.query.includes("ACCEPT_EMPTY_RECALL")) markers.push("ACCEPT_EMPTY_RECALL");
+    if (body.query.includes("ACCEPT_NULL_ORDER")) markers.push("ACCEPT_NULL_ORDER");
+    return {
+      keys: Object.keys(body).sort(),
+      ...(markers.length > 0 ? { queryMarkers: markers } : {}),
+      ...(body.min_scores !== undefined ? { min_scores: body.min_scores } : {}),
     };
   }
   return { keys: Object.keys(body).sort() };
@@ -373,28 +400,43 @@ export async function startMockHindsightServer(initialMode: MockHindsightMode = 
       }
       const bank = getOrCreateBank(bankId);
       const withScores = defaultIncludeRecallScores(mode);
-      const results = [...bank.documents.values()]
-        .flat()
-        .map((item) => ({
-          id: item.id,
-          text: item.text,
-          type: "world",
-          document_id: item.documentId,
-          metadata: item.metadata,
-          tags: ["pi-memory-hindsight"],
-          context: null,
-          mentioned_at: null,
-          ...(withScores
-            ? {
-                scores: {
-                  final: 1.0986786712451455,
-                  reranker: 0.91,
-                  semantic: null,
-                  keyword: 0.42,
-                },
-              }
-            : {}),
-        }));
+      const query = typeof parsed.query === "string" ? parsed.query : "";
+      // Acceptance markers for query-dependent synthetic Recall:
+      // - ACCEPT_EMPTY_RECALL: no results (same-Session stale /memory last proof)
+      // - ACCEPT_NULL_ORDER: only the HIGH/BOUNDARY/MID fixtures (exact top-3 + null-last)
+      const forceEmpty = query.includes("ACCEPT_EMPTY_RECALL");
+      const nullOrderOnly = query.includes("ACCEPT_NULL_ORDER");
+      let units = [...bank.documents.values()].flat();
+      if (nullOrderOnly) {
+        units = units.filter(
+          (item) =>
+            item.text.includes("SEM-HIGH") ||
+            item.text.includes("SEM-BOUNDARY") ||
+            item.text.includes("SEM-MID"),
+        );
+      }
+      const results = forceEmpty
+        ? []
+        : units.map((item) => ({
+            id: item.id,
+            text: item.text,
+            type: "world",
+            document_id: item.documentId,
+            metadata: item.metadata,
+            tags: ["pi-memory-hindsight"],
+            context: null,
+            mentioned_at: null,
+            ...(withScores
+              ? {
+                  scores: item.scores ?? {
+                    final: 1.0986786712451455,
+                    reranker: 0.91,
+                    semantic: null,
+                    keyword: 0.42,
+                  },
+                }
+              : {}),
+          }));
       finish(200, "recall", summarizeBody(parsed));
       return json(res, 200, { results });
     }
@@ -483,6 +525,15 @@ export async function startMockHindsightServer(initialMode: MockHindsightMode = 
     },
     getBank(bankId: string) {
       return banks.get(bankId);
+    },
+    setDocumentScores(bankId, documentId, scores) {
+      const bank = banks.get(bankId);
+      const units = bank?.documents.get(documentId);
+      if (!units || units.length === 0) return false;
+      for (const unit of units) {
+        unit.scores = { ...scores };
+      }
+      return true;
     },
   };
 }

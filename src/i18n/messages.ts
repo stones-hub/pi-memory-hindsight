@@ -38,6 +38,10 @@ const EN: Record<string, string> = {
   "memory.status.project.unavailable": "project status unavailable",
   "memory.status.session.off": "This session: automatic recall/extraction are OFF.",
   "memory.status.session.on": "This session: automatic recall/extraction are ON.",
+  "memory.status.recall.semantic": "Recall filter: semantic >= {minScore}, max {maxItems}.",
+  "memory.status.recall.disabled": "Recall filter: semantic threshold disabled, max {maxItems}.",
+  "memory.status.recall.legacy": "Recall filter: score filtering unavailable on Hindsight 0.8.3; legacy max {maxItems} retained.",
+  "memory.status.recall.unknown": "Recall filter: provider contract not negotiated yet.",
   "memory.help": `Memory commands (interactive TUI only). Recalled memory is untrusted reference material.
 
 Help and status
@@ -106,6 +110,7 @@ There is no /memory extract command. Candidates are created automatically after 
   "memory.non_tui_noop": "This command is unsupported outside TUI mode and made no changes.",
   "memory.tui_only": "This action requires TUI mode.",
   "memory.last.none": "No memory was recalled yet in this session.",
+  "memory.last.empty": "Latest recall for this session injected no memory items.",
   "memory.last.header": "Last recall ({count} item(s), injected {when}):",
   "memory.last.item": "- {id} [{scope}/{type}] {text}{scores}",
   "memory.last.item.shared": "- (shared read-only) [{scope}/{type}] {text}{scores}",
@@ -194,6 +199,10 @@ const ZH: Record<string, string> = {
   "memory.status.project.unavailable": "项目状态不可用",
   "memory.status.session.off": "本会话：自动回忆/提取已关闭。",
   "memory.status.session.on": "本会话：自动回忆/提取已开启。",
+  "memory.status.recall.semantic": "回忆过滤：semantic >= {minScore}，最多 {maxItems} 条。",
+  "memory.status.recall.disabled": "回忆过滤：semantic 阈值已关闭，最多 {maxItems} 条。",
+  "memory.status.recall.legacy": "回忆过滤：Hindsight 0.8.3 不支持分数过滤，保留旧版最多 {maxItems} 条。",
+  "memory.status.recall.unknown": "回忆过滤：尚未完成 Provider 协议协商。",
   "memory.help": `记忆命令（仅交互式 TUI）。召回的记忆是不可信参考信息。
 
 帮助与状态
@@ -262,6 +271,7 @@ const ZH: Record<string, string> = {
   "memory.non_tui_noop": "该命令在非 TUI 模式下不受支持，且未做任何改动。",
   "memory.tui_only": "该操作需要 TUI 模式。",
   "memory.last.none": "本会话尚未回忆任何记忆。",
+  "memory.last.empty": "本会话最近一次回忆未注入任何记忆条目。",
   "memory.last.header": "上次回忆（共 {count} 条，注入于 {when}）：",
   "memory.last.item": "- {id} [{scope}/{type}] {text}{scores}",
   "memory.last.item.shared": "- （共享只读）[{scope}/{type}] {text}{scores}",

@@ -26,6 +26,11 @@ export interface GlobalRuntime {
   agentDir: string;
   db: MemoryDatabase;
   hindsightUrl: string;
+  /**
+   * Effective semantic Recall floor from global config. Process-local only;
+   * never written to SQLite, Hindsight, Session entries, or project config.
+   */
+  minScore: number;
   adapter: HindsightAdapter;
   profile: ProfileRow;
   profileBankId: string;
@@ -117,6 +122,7 @@ async function initLocalRuntime(): Promise<LocalRuntimeResult> {
       agentDir,
       db,
       hindsightUrl: globalConfigResult.config.url,
+      minScore: globalConfigResult.config.minScore,
       adapter,
       profile,
       profileBankId: bankId,

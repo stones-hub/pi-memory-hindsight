@@ -2,9 +2,8 @@
  * Global extension configuration.
  *
  * Location: `<agent-dir>/memory-hindsight.json`.
- * Contract (product-requirements.md "Configuration/Global"): the file may contain
- * only a `url` field. Credentials are never read from this file — only from
- * `HINDSIGHT_API_KEY`.
+ * Contract: the file may contain only `url` and optional `minScore`.
+ * Credentials are never read from this file — only from `HINDSIGHT_API_KEY`.
  */
 
 import { readFile } from "node:fs/promises";
@@ -13,9 +12,16 @@ import path from "node:path";
 export interface GlobalConfig {
   /** Hindsight HTTP API base URL, e.g. "http://127.0.0.1:8888". */
   url: string;
+  /**
+   * Minimum native Hindsight `scores.semantic` for automatic Recall on
+   * negotiated `0.10.0`. Omission resolves to `0.5`. `0` disables the
+   * threshold. Carried only in process-local runtime; never persisted elsewhere.
+   */
+  minScore: number;
 }
 
 export const DEFAULT_HINDSIGHT_URL = "http://127.0.0.1:8888";
+export const DEFAULT_MIN_SCORE = 0.5;
 
 export type GlobalConfigResult =
   | { ok: true; config: GlobalConfig }
@@ -25,34 +31,55 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function validateMinScore(value: unknown): { ok: true; value: number } | { ok: false; reason: string } {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return { ok: false, reason: 'global config field "minScore" must be a finite number' };
+  }
+  if (value < 0 || value > 1) {
+    return { ok: false, reason: 'global config field "minScore" must be in the inclusive range 0..1' };
+  }
+  return { ok: true, value };
+}
+
 /**
  * Validates a parsed global config JSON value against the strict allowlist.
- * Any field other than `url`, or a non-string `url`, is rejected.
+ * Any field other than `url`/`minScore`, or an invalid value, is rejected.
  */
 export function validateGlobalConfig(value: unknown): GlobalConfigResult {
   if (!isPlainObject(value)) {
     return { ok: false, reason: "global config must be a JSON object" };
   }
   const keys = Object.keys(value);
-  const allowed = new Set(["url"]);
+  const allowed = new Set(["url", "minScore"]);
   for (const key of keys) {
     if (!allowed.has(key)) {
       return { ok: false, reason: `global config field "${key}" is not allowed` };
     }
   }
-  const url = value.url;
-  if (url === undefined) {
-    return { ok: true, config: { url: DEFAULT_HINDSIGHT_URL } };
+
+  let url = DEFAULT_HINDSIGHT_URL;
+  if (value.url !== undefined) {
+    if (typeof value.url !== "string" || value.url.trim().length === 0) {
+      return { ok: false, reason: 'global config field "url" must be a non-empty string' };
+    }
+    const normalizedUrl = value.url.trim();
+    const urlCheck = validateHindsightUrl(normalizedUrl);
+    if (!urlCheck.ok) {
+      return { ok: false, reason: urlCheck.reason };
+    }
+    url = normalizedUrl;
   }
-  if (typeof url !== "string" || url.trim().length === 0) {
-    return { ok: false, reason: "global config field \"url\" must be a non-empty string" };
+
+  let minScore = DEFAULT_MIN_SCORE;
+  if (value.minScore !== undefined) {
+    const scoreCheck = validateMinScore(value.minScore);
+    if (!scoreCheck.ok) {
+      return { ok: false, reason: scoreCheck.reason };
+    }
+    minScore = scoreCheck.value;
   }
-  const normalizedUrl = url.trim();
-  const urlCheck = validateHindsightUrl(normalizedUrl);
-  if (!urlCheck.ok) {
-    return { ok: false, reason: urlCheck.reason };
-  }
-  return { ok: true, config: { url: normalizedUrl } };
+
+  return { ok: true, config: { url, minScore } };
 }
 
 export type UrlCheckResult = { ok: true } | { ok: false; reason: string };
@@ -85,8 +112,8 @@ export function validateHindsightUrl(raw: string): UrlCheckResult {
 
 /**
  * Reads and validates the global config file. Missing file is not an error:
- * it resolves to the default URL. Any parse/validation failure disables the
- * memory feature safely (caller decides how to report this).
+ * it resolves to the default URL and default minScore. Any parse/validation
+ * failure disables the memory feature safely (caller decides how to report this).
  */
 export async function loadGlobalConfig(agentDir: string): Promise<GlobalConfigResult> {
   const filePath = path.join(agentDir, "memory-hindsight.json");
@@ -96,7 +123,7 @@ export async function loadGlobalConfig(agentDir: string): Promise<GlobalConfigRe
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
-      return { ok: true, config: { url: DEFAULT_HINDSIGHT_URL } };
+      return { ok: true, config: { url: DEFAULT_HINDSIGHT_URL, minScore: DEFAULT_MIN_SCORE } };
     }
     return { ok: false, reason: `failed to read global config: ${code ?? "unknown error"}` };
   }
